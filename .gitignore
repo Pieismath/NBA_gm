@@ -11,8 +11,10 @@ dist/
 venv/
 env/
 
-# Cached datasets (rebuilt on first run)
-.cache/
+# Cached datasets — ignore everything in .cache/ EXCEPT nba_*.parquet, which
+# we ship so Streamlit Cloud has data (stats.nba.com blocks GCP IPs).
+.cache/*
+!.cache/nba_*.parquet
 
 # Streamlit runtime
 .streamlit/secrets.toml
