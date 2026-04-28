@@ -29,3 +29,7 @@ env/
 
 # Logs
 *.log
+
+# Video demo (lives in the Gradescope zip, not in git)
+*.mov
+*.mp4
