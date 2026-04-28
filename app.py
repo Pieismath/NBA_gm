@@ -1,5 +1,5 @@
 """
-app.py — GM Mode
+app.py: GM Mode
 ================
 Pared-down, pixel-art-flavored Streamlit interface for the three-layer NBA
 trade optimizer. Each player gets a tiny animated pixel sprite colored by
@@ -99,7 +99,7 @@ _PLAYER_SPRITE = [
     "..KK....KK..",
 ]
 
-# 12×14 GM in a suit — white shirt, orange tie, navy jacket, clipboard.
+# 12×14 GM in a suit: white shirt, orange tie, navy jacket, clipboard.
 #   X/H = hair   S = skin   J = suit   W = shirt   T = tie
 #   P = pants (same tone)   K = shoes   C = clipboard   B = clipboard band
 _GM_SPRITE = [
@@ -168,7 +168,7 @@ def pixel_sprite(player: PlayerRecord, px: int = 3) -> str:
     )
 
 
-# 10-wide × 11-tall jersey silhouette — J=primary, S=secondary (trim), W=white plate
+# 10-wide × 11-tall jersey silhouette: J=primary, S=secondary (trim), W=white plate
 _JERSEY = [
     "..JJ..JJ..",
     ".JJJSSJJJ.",
@@ -199,7 +199,7 @@ def team_logo(abbr: str, px: int = 6) -> str:
             )
     w = 10 * px
     h = 11 * px
-    # Text abbr on the white chest plate — Silkscreen, 3-letter
+    # Text abbr on the white chest plate: Silkscreen, 3-letter
     text_x = w / 2
     text_y = 6 * px + px  # center of white plate
     return (
@@ -214,7 +214,7 @@ def team_logo(abbr: str, px: int = 6) -> str:
 
 
 def gm_sprite(px: int = 4) -> str:
-    """The GM mascot — a suited character holding a clipboard. No basketball."""
+    """The GM mascot: a suited character holding a clipboard. No basketball."""
     suit  = INK            # black suit
     shirt = "#FFFFFF"      # crisp white shirt
     tie   = ORANGE
@@ -281,7 +281,7 @@ st.markdown(f"""
   section[data-testid="stSidebar"] * {{ color: {INK} !important; }}
   section[data-testid="stSidebar"] label {{ font-weight: 500; font-size: 13px; }}
 
-  /* PIXEL BUTTON — unmistakable, with hard drop shadow */
+  /* PIXEL BUTTON: unmistakable, with hard drop shadow */
   .stButton > button {{
     background: {ORANGE} !important;
     color: {PAPER} !important;
@@ -307,7 +307,7 @@ st.markdown(f"""
   }}
   .stButton > button:focus {{ outline: none !important; }}
 
-  /* Inputs — pixel borders, flat */
+  /* Inputs: pixel borders, flat */
   .stSelectbox [data-baseweb="select"] > div,
   .stNumberInput input,
   .stMultiSelect [data-baseweb="select"] > div {{
@@ -323,7 +323,7 @@ st.markdown(f"""
     font-weight: 500 !important;
   }}
 
-  /* Expander (rules) — flat */
+  /* Expander (rules):flat */
   [data-testid="stExpander"] {{
     border: 1.5px solid {INK} !important;
     border-radius: 4px !important;
@@ -331,7 +331,7 @@ st.markdown(f"""
   }}
   [data-testid="stExpander"] summary {{ font-family: 'Silkscreen', monospace; font-size: 12px; letter-spacing: 0.1em; }}
 
-  /* Checkboxes — pixel square */
+  /* Checkboxes: pixel square */
   .stCheckbox [data-baseweb="checkbox"] > div:first-child {{
     border: 2px solid {INK} !important;
     border-radius: 2px !important;
@@ -351,7 +351,7 @@ st.markdown(f"""
   }}
   .gm-sub {{ color: {MUTED}; font-size: 14px; margin-bottom: 18px; }}
 
-  /* Summary strip — flat pixel panel */
+  /* Summary strip: flat pixel panel */
   .gm-strip {{
     display: grid; grid-template-columns: 1fr 1fr 1fr;
     gap: 20px; margin: 28px 0 14px 0;
@@ -379,7 +379,7 @@ st.markdown(f"""
   .gm-note.ok  {{ color: {COURT}; font-weight: 700; }}
   .gm-note.bad {{ color: {RED};   font-weight: 700; }}
 
-  /* Roster heading — clean pixel label */
+  /* Roster heading: clean pixel label */
   .gm-rhead {{
     font-family: 'Silkscreen', monospace;
     font-weight: 400; font-size: 12px; letter-spacing: 0.16em;
@@ -423,7 +423,7 @@ st.markdown(f"""
   .gm-tag-ntc    {{ background: #F6DADA; color: {INK}; }}
   .gm-tag-recent {{ background: #FDEBC8; color: {INK}; }}
 
-  /* Verdict — pixel panel */
+  /* Verdict: pixel panel */
   .gm-verdict {{
     display: flex; gap: 16px; align-items: center;
     margin: 24px 0; padding: 18px 22px;
@@ -466,7 +466,7 @@ st.markdown(f"""
   }}
   .gm-sprite {{ animation: gm-sprite-step 0.6s steps(2, end) infinite; }}
 
-  /* GM mascot — gentle idle bob */
+  /* GM mascot: gentle idle bob */
   @keyframes gm-coach-bob {{
     0%, 100% {{ transform: translateY(0); }}
     50%      {{ transform: translateY(-2px); }}
@@ -489,7 +489,7 @@ st.markdown(f"""
   }}
   @keyframes gm-blink {{ 50% {{ opacity: 0; }} }}
 
-  /* Tabs — pixel underline, hard override of streamlit default */
+  /* Tabs: pixel underline, hard override of streamlit default */
   .stTabs [data-baseweb="tab-list"] {{
     gap: 2px; border-bottom: 2px solid {INK};
   }}
@@ -518,7 +518,7 @@ st.markdown(f"""
   }}
   .gm-big small {{ font-family: 'VT323', monospace; font-size: 18px; color: {MUTED}; font-weight: 500; }}
 
-  /* How-it-works — flat card */
+  /* How-it-works: flat card */
   .gm-how {{
     margin-top: 28px; padding: 22px 24px;
     background: {PAPER_2}; border-radius: 4px;
@@ -527,7 +527,7 @@ st.markdown(f"""
   .gm-how ol {{ margin: 10px 0 0 18px; line-height: 1.9; color: {INK}; font-size: 14px; }}
   .gm-how b {{ color: {ORANGE}; }}
 
-  /* Data frame — clean frame, no shadow */
+  /* Data frame: clean frame, no shadow */
   .stDataFrame {{
     border: 1.5px solid {INK} !important;
     border-radius: 4px !important;
@@ -540,7 +540,7 @@ st.markdown(f"""
   /* Scanline / pixel texture on hero (subtle) */
   .gm-hero-wrap {{ position: relative; }}
 
-  /* Team card — pixel jersey + team info */
+  /* Team card: pixel jersey + team info */
   .gm-teamcard {{
     display: flex; align-items: center; gap: 12px;
     padding: 10px 12px; margin: 2px 0 8px 0;
@@ -563,7 +563,7 @@ st.markdown(f"""
   }}
   .gm-teamcard-meta b {{ color: {INK}; font-weight: 500; }}
 
-  /* Sidebar label — pixel */
+  /* Sidebar label: pixel */
   .gm-sidelabel {{
     font-family: 'Silkscreen', monospace;
     font-size: 10px; letter-spacing: 0.18em; color: {MUTED};
@@ -593,7 +593,7 @@ st.markdown(f"""
   }}
   .gm-pick-jersey {{ line-height: 0; }}
 
-  /* Popover trigger (Change team) — small and quiet so the card is the focus */
+  /* Popover trigger (Change team):small and quiet so the card is the focus */
   [data-testid="stPopover"] > div > button {{
     background: {PAPER} !important;
     color: {INK} !important;
@@ -610,18 +610,29 @@ st.markdown(f"""
   [data-testid="stPopover"] > div > button:hover {{
     background: {PAPER_2} !important;
   }}
-  /* Team-pick tiny buttons inside the popover — very compact */
-  [data-testid="stPopoverBody"] .stButton > button {{
+  /* Team-pick tiny buttons inside the picker (popover or expander):very compact */
+  [data-testid="stPopoverBody"] .stButton > button,
+  [data-testid="stExpander"] .stButton > button {{
     padding: 4px 2px !important;
     font-size: 10px !important;
-    letter-spacing: 0.06em !important;
+    letter-spacing: 0.04em !important;
     box-shadow: none !important;
     background: {PAPER} !important;
     color: {INK} !important;
     border: 1.5px solid {INK} !important;
     margin-top: 2px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    min-width: 0 !important;
   }}
-  [data-testid="stPopoverBody"] .stButton > button:hover {{
+  [data-testid="stExpander"] .stButton > button > div,
+  [data-testid="stExpander"] .stButton > button p {{
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: clip !important;
+  }}
+  [data-testid="stPopoverBody"] .stButton > button:hover,
+  [data-testid="stExpander"] .stButton > button:hover {{
     background: {INK} !important;
     color: {PAPER} !important;
   }}
@@ -661,7 +672,7 @@ def _roster(df: pd.DataFrame, abbr: str) -> List[PlayerRecord]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Player row renderer — now with pixel sprite
+# Player row renderer: now with pixel sprite
 # ─────────────────────────────────────────────────────────────────────────────
 
 def player_row(p: PlayerRecord) -> str:
@@ -705,7 +716,7 @@ model = _get_model()
 # Hero
 # ─────────────────────────────────────────────────────────────────────────────
 
-# hero mascot — a suited GM holding a clipboard
+# hero mascot: a suited GM holding a clipboard
 _hero_sprite = gm_sprite(px=5)
 st.markdown(
     f'<div class="gm-hero-wrap" style="display:flex; align-items:center; gap:20px; margin-bottom:6px;">'
@@ -724,7 +735,7 @@ st.markdown(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _player_option_label(p) -> str:
-    """Compact option label for the player multiselect — jersey + name + salary."""
+    """Compact option label for the player multiselect: jersey + name + salary."""
     num = p.jersey_num if p.jersey_num else "--"
     return f"#{num:>2}  {p.position}  {p.name}  (${p.salary/1e6:.1f}M)"
 
@@ -754,7 +765,7 @@ def team_picker(key: str, label: str, teams_list, default_idx: int):
         unsafe_allow_html=True,
     )
 
-    with st.popover(f"▾  Change team", use_container_width=True):
+    with st.expander(f"Change {label}", expanded=False):
         st.markdown('<div class="gm-pickpanel-head">Pick a team</div>', unsafe_allow_html=True)
         # 6 rows × 5 cols = 30 teams
         sorted_teams = sorted(teams_list, key=lambda x: x[0])  # alphabetical by abbr
@@ -830,9 +841,13 @@ with st.sidebar:
 
 out_sal = sum(p.salary for p in outgoing)
 in_sal  = sum(p.salary for p in incoming)
-if out_sal > 0:
-    ratio = in_sal / out_sal
-    match_ok = ratio <= 1.25 + (100_000 / out_sal)
+if out_sal > 0 and in_sal > 0:
+    # CBA rule applies per team: incoming <= outgoing * 1.25 + $100K.
+    # Both teams must pass; the tighter side is whoever sends less.
+    cap_a_receives = out_sal * 1.25 + 100_000
+    cap_b_receives = in_sal  * 1.25 + 100_000
+    match_ok = (in_sal <= cap_a_receives) and (out_sal <= cap_b_receives)
+    ratio = max(out_sal, in_sal) / min(out_sal, in_sal)
 else:
     ratio, match_ok = 0.0, False
 
@@ -840,13 +855,13 @@ st.markdown(
     f'<div class="gm-strip">'
     f'{strip_cell(f"{team_a} sends", f"${out_sal/1e6:,.1f}M", f"{len(outgoing)} player{'s' if len(outgoing)!=1 else ''}")}'
     f'{strip_cell(f"{team_b} sends", f"${in_sal/1e6:,.1f}M", f"{len(incoming)} player{'s' if len(incoming)!=1 else ''}")}'
-    f'{strip_cell("Salary match", f"{ratio*100:.0f}%", "within limit" if match_ok else "over 125% + $100K", "ok" if match_ok else "bad")}'
+    f'{strip_cell("Salary gap", f"{ratio*100:.0f}%", "within 125% + $100K" if match_ok else "exceeds 125% + $100K", "ok" if match_ok else "bad")}'
     f'</div>',
     unsafe_allow_html=True,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Rosters — pixel sprites appear next to every player
+# Rosters: pixel sprites appear next to every player
 # ─────────────────────────────────────────────────────────────────────────────
 
 lcol, rcol = st.columns(2)
@@ -890,7 +905,7 @@ if run_clicked:
         hard_cap_threshold=cap_limit * 1_000_000,
     )
 
-    # Layer 1 — SAT
+    # Layer 1:SAT
     sat = SATFeasibilityChecker(cfg)
     t0 = time.perf_counter()
     sat_result = sat.check(
@@ -1092,9 +1107,9 @@ else:
         f'Pick two teams and the players moving each way, then hit <b>Evaluate</b>. Three layers run:'
         f'</p>'
         f'<ol>'
-        f'<li><b>SAT feasibility</b> — a CDCL solver (pysat) checks the boolean CBA rules.</li>'
-        f'<li><b>MIP optimization</b> — OR-Tools CP-SAT races PuLP+CBC to find the max-value deal under the hard cap.</li>'
-        f'<li><b>GBT valuation</b> — a gradient-boosted regressor scores every player in the receiving team\'s context.</li>'
+        f'<li><b>SAT feasibility</b>:a CDCL solver (pysat) checks the boolean CBA rules.</li>'
+        f'<li><b>MIP optimization</b>:OR-Tools CP-SAT races PuLP+CBC to find the max-value deal under the hard cap.</li>'
+        f'<li><b>GBT valuation</b>:a gradient-boosted regressor scores every player in the receiving team\'s context.</li>'
         f'</ol>'
         f'</div>',
         unsafe_allow_html=True,

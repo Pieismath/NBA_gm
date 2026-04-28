@@ -1,48 +1,30 @@
 """
-mip_layer.py
-------------
-MIP optimisation layer with two solver backends:
-  1. OR-Tools CP-SAT  (primary)
-  2. PuLP + CBC       (comparison)
+MIP optimisation. Solves the same trade problem twice, once with OR-Tools
+CP-SAT (primary) and once with PuLP+CBC (comparison check).
 
-Problem formulation
--------------------
-Given:
-  • Two pools of players (candidates_from_a going to B, candidates_from_b going to A)
-  • A valuation score per player per receiving team (from valuation_model.py)
-  • Boolean feasibility assignments from the SAT layer (forced_out set)
+Inputs:
+  - Two candidate pools (from_a goes to B, from_b goes to A)
+  - A per-player valuation in the receiving team's context (from
+    valuation_model.py)
+  - The forced_out set from the SAT layer (player IDs we must not trade)
 
-Decide: which subset of candidates to actually trade.
+Decision variables:
+  x[p] in {0, 1}, 1 if p is in the final trade.
 
-Variables:
-  x[p] ∈ {0, 1}  –  1 if player p is included in the final trade
-
-Objective (maximise):
-  Σ_{p ∈ candidates_b} val_for_a[p] * x[p]   – value A receives
-  - Σ_{p ∈ candidates_a} val_for_b_context[p] * x[p]   – (not used; see note)
-
-  More precisely: we maximise TOTAL NET VALUE across both teams, which equals
-  Σ_{p ∈ from_b→A} val_for_a[p] * x[p]  +  Σ_{p ∈ from_a→B} val_for_b[p] * x[p]
-  - Σ_{p ∈ from_a→B} val_for_a[p] * x[p] - Σ_{p ∈ from_b→A} val_for_b[p] * x[p]
-
-  Simplified: for each traded player, the gain is how they are valued by the
-  *receiving* team minus how they are valued by the *sending* team.
+Objective (maximise total net value):
+  for each traded player, gain = (receiving team's valuation) - (sending
+  team's valuation). Same player has different value to different teams,
+  which is what makes the swap positive-sum.
 
 Constraints:
-  C1. SAT-fixed: x[p] = 0   for all p in forced_out
-  C2. Salary matching (incoming ≤ outgoing * 1.25 + $100K) – per team, linear
-  C3. Hard cap: post-trade total salary ≤ $165M – per team, linear
-  C4. At least 1 player must move each direction (trade must be non-trivial)
+  C1. x[p] = 0 for any p in forced_out (SAT preprocessing).
+  C2. Salary matching per team: incoming <= outgoing * 1.25 + $100K.
+  C3. Hard cap per team: post-trade total <= $165M (when toggle is on).
+  C4. At least one player moves each direction (rule out the empty trade).
 
-OR-Tools CP-SAT notes
----------------------
-CP-SAT is an integer/boolean solver; all coefficients must be integers.
-We scale salaries to $1,000 units (integer thousands) and valuations × 1000
-(integer millival) to preserve precision while satisfying the integer requirement.
-
-PuLP notes
-----------
-PuLP accepts floats directly so no scaling is needed.
+CP-SAT is integer-only, so we scale salaries to $1K units and valuations
+by 1000 to keep precision. PuLP/CBC takes floats directly. After solving,
+CP-SAT's objective is divided by 1000 to compare against CBC's.
 """
 
 from __future__ import annotations
@@ -61,7 +43,7 @@ try:
     ORTOOLS_AVAILABLE = True
 except ImportError:
     ORTOOLS_AVAILABLE = False
-    print("[mip_layer] ortools not installed – OR-Tools solver unavailable.")
+    print("[mip_layer] ortools not installed; OR-Tools solver unavailable.")
 
 # ── PuLP ──────────────────────────────────────────────────────────────────────
 try:
@@ -69,7 +51,7 @@ try:
     PULP_AVAILABLE = True
 except ImportError:
     PULP_AVAILABLE = False
-    print("[mip_layer] pulp not installed – PuLP/CBC solver unavailable.")
+    print("[mip_layer] pulp not installed; PuLP/CBC solver unavailable.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,32 +61,12 @@ except ImportError:
 @dataclass
 class MIPResult:
     """
-    Output of one MIP solve.
-
-    Attributes
-    ----------
-    solver_name : str
-        "OR-Tools CP-SAT" or "PuLP CBC".
-    status : str
-        Human-readable solver status ("OPTIMAL", "FEASIBLE", "INFEASIBLE", …).
-    optimal : bool
-        True iff the solver found a provably optimal solution.
-    objective_value : float
-        Best objective value found (net trade valuation gain).
-    players_traded_from_a : list[PlayerRecord]
-        Subset of candidates_from_a selected for the trade (going to B).
-    players_traded_from_b : list[PlayerRecord]
-        Subset of candidates_from_b selected for the trade (going to A).
-    salary_out_a : float
-        Total outgoing salary from Team A.
-    salary_in_a : float
-        Total incoming salary for Team A.
-    salary_out_b : float
-        Total outgoing salary from Team B.
-    salary_in_b : float
-        Total incoming salary for Team B.
-    solve_time_ms : float
-        Wall-clock solve time in milliseconds.
+    What one MIP solve returns. solver_name is "OR-Tools CP-SAT" or
+    "PuLP CBC". status mirrors the solver's own status string ("OPTIMAL",
+    "FEASIBLE", "INFEASIBLE", etc.) and `optimal` is True only when the
+    solver proved optimality. objective_value is the net trade valuation
+    gain. The four salary fields are totals in USD (not scaled).
+    solve_time_ms is wall-clock for the solve call only.
     """
     solver_name: str
     status: str
@@ -188,7 +150,7 @@ def solve_ortools(
     """
     Solve the trade optimisation with OR-Tools CP-SAT.
 
-    All integer arithmetic – salaries in $1K units, valuations × 1000.
+    All integer arithmetic; salaries in $1K units, valuations times 1000.
     """
     import time as _time
 
@@ -287,7 +249,7 @@ def solve_ortools(
     # Maximise total net value:
     #   A gains val_for_a of each player received (from B)
     #   B gains val_for_b of each player received (from A)
-    #   A loses val_for_a of each player sent (from A – but those valuations
+    #   A loses val_for_a of each player sent (from A, but those valuations
     #     are from B's context, not A's; we use each player's stored .valuation
     #     which was set in the context of their RECEIVING team by main.py)
     #

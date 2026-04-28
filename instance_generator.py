@@ -1,28 +1,14 @@
 """
-instance_generator.py
----------------------
-Parameterised synthetic trade scenario generator for benchmarking and testing.
+Synthetic trade-scenario generator for benchmarking. Builds NBA-like trade
+scenarios from scratch (no real data needed); the output drops straight into
+the SAT/MIP layers like a real scenario would.
 
-Generates realistic NBA-like trade scenarios from scratch without needing real
-data.  Each generated scenario has the same structure as a real scenario, so it
-can be fed directly into the SAT and MIP layers.
-
-Parameters
-----------
-n_teams          : int (2 or 3)  – number of teams involved in the trade
-n_players_each   : int           – number of candidate players per team side
-salary_variance  : float [0, 1]  – how spread out the salaries are
-                                   (0 = very uniform, 1 = max spread)
-constraint_tightness : float [0, 1]
-    Controls what fraction of generated trades are *legal* (feasible).
-    0 = almost every trade is legal.
-    1 = very few trades are legal (lots of NTC / recently-signed players,
-        tight roster sizes, etc.).
-
-Public API
-----------
-generate_instance(...)            → TradeInstance
-generate_benchmark_suite(k, ...) → list[TradeInstance]
+Knobs:
+  n_teams              2 or 3
+  n_players_each       candidates offered per team
+  salary_variance      0 = uniform salaries, 1 = max spread
+  constraint_tightness 0 = nearly every trade is legal,
+                       1 = nearly none (lots of NTC players, tight rosters)
 """
 
 from __future__ import annotations
@@ -36,30 +22,17 @@ from data_fetcher import PlayerRecord
 from constraints_config import ConstraintsConfig
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TradeInstance dataclass
-# ─────────────────────────────────────────────────────────────────────────────
-
 @dataclass
 class TradeInstance:
     """
-    One synthetic trade scenario ready for the SAT and MIP layers.
+    One synthetic trade scenario, structured the same way real scenarios are
+    so the SAT and MIP layers can consume it directly.
 
-    Attributes
-    ----------
-    teams : list[str]
-        Team abbreviations (e.g. ["A", "B"] or ["A", "B", "C"]).
-    rosters : dict[str, list[PlayerRecord]]
-        Full current roster for each team.
-    candidates : dict[str, list[PlayerRecord]]
-        Subset of each team's roster that is offered up as trade candidates.
-        The SAT / MIP layers decide which subset to actually trade.
-    config : ConstraintsConfig
-        The constraint config that was used when generating this instance.
-    expected_feasible : bool
-        Whether the instance was designed to have at least one feasible solution.
-    seed : int
-        RNG seed used to generate this instance (for reproducibility).
+    teams holds the abbreviations (e.g. ["A", "B"]). rosters and candidates
+    are dicts keyed by abbr; candidates is a subset of the roster that the
+    instance is "offering up" for trade. config is the ConstraintsConfig the
+    generator used. expected_feasible is whether we built this to have at
+    least one legal trade. seed is the RNG seed for reproducibility.
     """
     teams: list[str]
     rosters: dict[str, list[PlayerRecord]]
@@ -91,9 +64,7 @@ class TradeInstance:
         return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Internal helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ---- Internal helpers ----
 
 _POSITIONS = ["PG", "SG", "SF", "PF", "C"]
 
@@ -188,9 +159,7 @@ def _build_roster(
     return full_roster, candidates
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Public generator
-# ─────────────────────────────────────────────────────────────────────────────
+# ---- Public generator ----
 
 def generate_instance(
     n_teams: int = 2,
@@ -305,10 +274,8 @@ def generate_benchmark_suite(
     ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Quick self-test
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # quick self-test
     print("=== 2-team instance ===")
     inst = generate_instance(n_teams=2, n_players_each=3, seed=7)
     print(inst.summary())

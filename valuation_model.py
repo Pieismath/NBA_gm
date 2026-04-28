@@ -1,25 +1,12 @@
 """
-valuation_model.py
-------------------
-Gradient-Boosted Tree (GBT) player valuation model.
+GBT player valuation. Takes player features (age, salary, BPM, VORP, TS%,
+positional fit, team rebuild score) plus a team context and outputs a scalar
+score that the MIP plugs into its objective.
 
-The model takes per-player features (age, salary, BPM, VORP, TS%, positional
-fit, team rebuild score) and outputs a scalar *valuation score* that represents
-how valuable a player is in a given team context.  This score is what the MIP
-layer maximises.
-
-Because real historical trade data is not freely available through a public
-API, the model is trained on *synthetic* data generated to approximate
-realistic NBA player distributions.  The synthetic labels are a deterministic
-function of the features plus Gaussian noise, so the model learns sensible
-feature importances even without real outcomes.
-
-Public API
-----------
-PlayerValuationModel.fit(players)        – train on a list of PlayerRecords
-PlayerValuationModel.predict(player, team_context) → float
-PlayerValuationModel.batch_predict(players, team_context) → dict[int, float]
-generate_synthetic_training_data(n)     – standalone helper
+Trained on synthetic data, not real trade outcomes (no public dataset of
+"this trade was worth +0.42 to Brooklyn" exists). The synthetic labels are a
+deterministic function of the features plus Gaussian noise, which is enough
+to teach the model sensible feature importances.
 """
 
 from __future__ import annotations
@@ -37,7 +24,7 @@ try:
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
-    print("[valuation_model] scikit-learn not installed – using linear fallback.")
+    print("[valuation_model] scikit-learn not installed; using linear fallback.")
 
 from data_fetcher import PlayerRecord
 
@@ -49,21 +36,13 @@ from data_fetcher import PlayerRecord
 @dataclass
 class TeamContext:
     """
-    Encodes the receiving team's situation so the model can compute
-    how well an incoming player fits.
+    Receiving team's situation, fed into the valuation model so the same
+    player gets different scores for different teams.
 
-    Attributes
-    ----------
-    team_abbr : str
-        3-letter team abbreviation.
-    rebuild_score : float in [0, 1]
-        0 = full contender, 1 = full rebuild.
-        Affects whether young cheap players score higher than expensive vets.
-    positional_needs : dict[str, float]
-        Keys are positions ("PG", "SG", "SF", "PF", "C").
-        Values in [0, 1]: 1 = desperate need, 0 = no need.
-    cap_space : float
-        Current cap space in USD (may be negative if over cap).
+    rebuild_score is 0 (full contender) to 1 (full rebuild), and controls
+    whether cheap young players outscore expensive vets. positional_needs
+    maps "PG"/"SG"/"SF"/"PF"/"C" to 0..1 (1 = desperate need). cap_space
+    is in USD and can be negative if the team is already over.
     """
     team_abbr: str
     rebuild_score: float = 0.5
@@ -101,9 +80,9 @@ def build_feature_vector(
       2  bpm                       (Box Plus/Minus, typically -5 to +10)
       3  vorp                      (Value Over Replacement, typically 0 to 8)
       4  ts_pct                    (True Shooting %, typically 0.45 to 0.70)
-      5  positional_fit            (team's need at player's position, 0–1)
+      5  positional_fit            (team's need at player's position, 0 to 1)
       6  rebuild_score             (team rebuild score, 0=contender, 1=rebuild)
-      7  age_rebuild_interaction   (age * rebuild_score – young players valued
+      7  age_rebuild_interaction   (age * rebuild_score, young players valued
                                     more by rebuilding teams)
       8  salary_per_vorp           (salary efficiency proxy; capped to avoid /0)
     """
@@ -145,7 +124,7 @@ def _true_valuation(features: list[float]) -> float:
     # Core production value
     production = 2.5 * vorp + 1.5 * bpm + 5.0 * (ts - 0.55)
 
-    # Age premium/discount: peak ~26–28, discount for very young or very old
+    # Age premium/discount: peak around 26-28, discount for very young or very old
     age_factor = -0.15 * (age - 27) ** 2 / 10.0   # quadratic penalty
 
     # Salary efficiency: more valuable if producing a lot per dollar

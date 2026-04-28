@@ -1,36 +1,27 @@
 """
-sat_layer.py
-------------
-SAT feasibility layer using PicoSAT (via the python-sat / pysat library).
+SAT feasibility layer (PicoSAT via python-sat). Encodes the boolean parts
+of the CBA as CNF and checks satisfiability. If SAT, the model is a
+player_id -> traded mapping that the MIP reads as fixed assignments.
 
-Responsibility
---------------
-Encode NBA CBA *boolean* trade constraints as a propositional SAT formula and
-check satisfiability.  If the formula is satisfiable the model returns a dict
-of variable assignments (True/False per player) that the MIP layer will treat
-as fixed inputs.
+Three constraint families live here:
+  1. Roster size: each team has 13-15 players after the trade.
+  2. No-trade clauses: has_ntc=True forces traded=False.
+  3. Recently-signed: months_since_signing < 12 forces traded=False.
 
-Three constraint families are encoded here:
-  1. Roster-size limits  – each team must have 13–15 players after the trade.
-  2. No-trade clauses    – any player with has_ntc=True cannot be traded.
-  3. Recently-signed     – players signed < 12 months ago cannot be traded.
+Salary matching is deliberately not in here. It's a linear arithmetic
+constraint and lives in the MIP layer (see mip_layer.py for why
+pseudo-boolean encodings of cap arithmetic blow up).
 
-Salary matching is intentionally NOT encoded here; it is handled as a linear
-constraint in the MIP layer (mip_layer.py).
+Encoding (2-team trade with candidate pools per side):
 
-SAT Encoding Overview
----------------------
-For a 2-team trade (Team A ↔ Team B) with candidate player pools:
+  traded[p] in {0,1}
+    1 means p moves to the other team
+    0 means p stays put
 
-  Variable  traded[p]  ∈ {0, 1}
-    = 1  if player p is included in the trade (moves to the other team)
-    = 0  if player p stays on their current team
-
-Constraints:
-  • NTC / recently-signed:  ¬traded[p]   (unit clause → traded[p] = False)
-  • Roster size for Team A:
-        |roster_A| - |{p ∈ A : traded[p]}| + |{p ∈ B : traded[p]}|  ∈ [13, 15]
-    Encoded as two PseudoBoolean / cardinality constraints via CardEnc.
+  NTC / recently-signed: unit clause not(traded[p])
+  Roster size for team A:
+    |roster_A| - sum_{p in A}(traded[p]) + sum_{p in B}(traded[p]) in [13, 15]
+  encoded as two CardEnc atmost constraints over the candidate literals.
 """
 
 from __future__ import annotations
@@ -48,7 +39,7 @@ try:
     PYSAT_AVAILABLE = True
 except ImportError:
     PYSAT_AVAILABLE = False
-    print("[sat_layer] python-sat not installed – SAT layer will use a "
+    print("[sat_layer] python-sat not installed; SAT layer will use a "
           "lightweight fallback that checks constraints procedurally.")
 
 
@@ -58,19 +49,13 @@ except ImportError:
 
 class SATResult:
     """
-    Returned by SATFeasibilityChecker.check().
+    What SATFeasibilityChecker.check() returns.
 
-    Attributes
-    ----------
-    feasible : bool
-        True iff the SAT formula is satisfiable.
-    forced_out : set[int]
-        Player IDs that the SAT solver has forced to traded=False.
-        (NTC, recently-signed, or roster constraints.)
-    model : dict[int, bool]
-        Full variable assignment player_id → traded (True/False).
-    violations : list[str]
-        Human-readable explanation of any infeasibility.
+    feasible is True iff the SAT formula was satisfiable. forced_out is
+    the set of player IDs the solver had to pin to traded=False (NTC,
+    recently-signed, or roster cardinality). model is the full variable
+    assignment, player_id -> traded. violations is a list of human-readable
+    strings explaining any infeasibility.
     """
 
     def __init__(
@@ -100,14 +85,8 @@ class SATResult:
 class SATFeasibilityChecker:
     """
     Encodes a proposed trade as a CNF formula and solves it with PicoSAT.
-
-    Usage
-    -----
-    checker = SATFeasibilityChecker(config)
-    result  = checker.check(
-        roster_a, roster_b,
-        candidates_from_a, candidates_from_b
-    )
+    Build one with a ConstraintsConfig, then call .check(roster_a, roster_b,
+    candidates_a, candidates_b).
     """
 
     def __init__(self, config: ConstraintsConfig):
@@ -183,7 +162,7 @@ class SATFeasibilityChecker:
                     cnf.append([-var[p.player_id]])          # force traded = False
                     forced_out.add(p.player_id)
                     violations.append(
-                        f"NTC: {p.name} has a no-trade clause – cannot be traded."
+                        f"NTC: {p.name} has a no-trade clause; cannot be traded."
                     )
 
         # 2b. Recently-signed rule: ¬traded[p] for players signed < threshold
@@ -195,7 +174,7 @@ class SATFeasibilityChecker:
                         forced_out.add(p.player_id)
                         violations.append(
                             f"RECENTLY SIGNED: {p.name} signed "
-                            f"{p.months_since_signing} months ago – cannot be traded."
+                            f"{p.months_since_signing} months ago; cannot be traded."
                         )
 
         # 2c. Roster-size cardinality constraints ──────────────────────────
@@ -314,7 +293,7 @@ class SATFeasibilityChecker:
         # Even if SAT is technically satisfiable, report key violations for
         # the user so they understand which players are locked out.
         if not sat:
-            violations.append("SAT formula is UNSATISFIABLE – trade is infeasible.")
+            violations.append("SAT formula is UNSATISFIABLE; trade is infeasible.")
 
         return SATResult(
             feasible=feasible,
@@ -377,12 +356,12 @@ class SATFeasibilityChecker:
         if not (lo <= final_a <= hi):
             violations.append(
                 f"ROSTER SIZE: {roster_a[0].team if roster_a else 'TeamA'} "
-                f"would have {final_a} players (need {lo}–{hi})."
+                f"would have {final_a} players (need {lo}-{hi})."
             )
         if not (lo <= final_b <= hi):
             violations.append(
                 f"ROSTER SIZE: {roster_b[0].team if roster_b else 'TeamB'} "
-                f"would have {final_b} players (need {lo}–{hi})."
+                f"would have {final_b} players (need {lo}-{hi})."
             )
 
         feasible = len([v for v in violations if "SAT" not in v and "ROSTER SIZE" in v]) == 0

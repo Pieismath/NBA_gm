@@ -1,19 +1,10 @@
 """
-data_fetcher.py
----------------
-Fetches full-league NBA player data (all 30 teams) from Basketball-Reference
-and joins per-game, advanced, and contract tables into a single dataset.
+Pulls full-league NBA data from Basketball-Reference (all 30 teams) and
+joins per-game, advanced, and contract tables into one dataset. Cached to
+.cache/nba_<season>.parquet on first run so subsequent runs are instant.
 
-Results are cached to disk (~/Desktop/gm_mode/.cache/nba_<season>.parquet) so
-subsequent runs are instantaneous and work offline. A minimal hardcoded
-fallback keeps the pipeline runnable if the network is down on the first call.
-
-Public API
-----------
-get_all_players(season=2025, force_refresh=False)  → list[PlayerRecord]
-get_team_roster(abbr, season=2025)                 → list[PlayerRecord]
-get_all_teams(season=2025)                         → list[(abbr, name, count)]
-get_demo_players()                                 → dict[str, PlayerRecord]
+There is a small hardcoded `_DEMO_PLAYERS` pool at the bottom so the CLI
+demo runs even with no network on a fresh machine.
 """
 
 from __future__ import annotations
@@ -162,7 +153,7 @@ def _normalize_team(t: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# nba_api supplement — live rosters + jersey numbers
+# nba_api supplement: live rosters and jersey numbers
 # ─────────────────────────────────────────────────────────────────────────────
 
 # nba_api team abbreviations → Basketball-Reference abbreviations where they diverge.
@@ -213,7 +204,7 @@ def _fetch_nba_rosters(season: int) -> pd.DataFrame:
                 "jersey_num": str(row.get("NUM", "")).strip() or "--",
                 "nba_player_id": int(row["PLAYER_ID"]) if pd.notna(row["PLAYER_ID"]) else 0,
             })
-        time.sleep(0.6)  # courtesy pause — stats.nba.com rate-limits aggressively
+        time.sleep(0.6)  # courtesy pause; stats.nba.com rate-limits aggressively
     return pd.DataFrame(rows)
 
 
@@ -283,7 +274,7 @@ def _build_dataset(season: int) -> pd.DataFrame:
 
     # Months-since-signing heuristic: spread deterministically by name hash
     df["months_since_signing"] = df["name"].apply(
-        lambda n: 6 + (abs(hash(n)) % 30)   # 6–35 months
+        lambda n: 6 + (abs(hash(n)) % 30)   # 6-35 months
     )
 
     return df

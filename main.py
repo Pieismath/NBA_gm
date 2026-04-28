@@ -12,7 +12,7 @@ Pipeline:
   2. Train the GBT valuation model (valuation_model.py)
   3. Compute valuations for all trade participants
   4. Run SAT feasibility check (sat_layer.py)
-  5. Run MIP optimisation – OR-Tools CP-SAT and PuLP CBC (mip_layer.py)
+  5. Run MIP optimisation with OR-Tools CP-SAT and PuLP CBC (mip_layer.py)
   6. Display full results
 
 Also runs a small benchmark on 5 synthetic instances from instance_generator.py.
@@ -70,7 +70,7 @@ def check_salary_match(
 
 def main():
     print("\n" + "█" * 65)
-    print("  GM MODE  –  NBA Trade Package Optimizer")
+    print("  GM MODE: NBA Trade Package Optimizer")
     print("  Constraint Satisfaction + MIP + Gradient Boosted Trees")
     print("█" * 65)
 
@@ -206,8 +206,8 @@ def main():
         traded_flag = sat_result.model.get(player.player_id, "?")
         print(f"    traded[{player.name}] = {traded_flag}")
 
-    # Manual salary matching check (not in SAT – handled by MIP)
-    print("\n  Salary matching check (MIP constraint – shown here for info):")
+    # Manual salary matching check (not in SAT, handled by MIP)
+    print("\n  Salary matching check (MIP constraint, shown here for info):")
     sal_out_lal = ad.salary      # LAL sends AD
     sal_in_lal  = simmo.salary   # LAL receives Simmons
     sal_out_bkn = simmo.salary
@@ -256,7 +256,7 @@ def main():
         if delta < 1e-3:
             print("  ✓ Both solvers agree on the optimal objective value.")
         else:
-            print("  ! Solvers disagree – check model formulations.")
+            print("  ! Solvers disagree, check model formulations.")
 
     # ─────────────────────────────────────────────────────────────────────
     # SECTION 6b: Re-run with hard cap DISABLED (constraint toggle demo)
@@ -289,7 +289,7 @@ def main():
     # ─────────────────────────────────────────────────────────────────────
     # SECTION 7: Benchmarking on synthetic instances
     # ─────────────────────────────────────────────────────────────────────
-    section("7. Benchmark – Synthetic Trade Instances")
+    section("7. Benchmark on Synthetic Trade Instances")
 
     print("\n  Generating 5 synthetic 2-team trade instances …\n")
     suite = generate_benchmark_suite(
