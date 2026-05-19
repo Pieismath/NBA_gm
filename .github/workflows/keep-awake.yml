@@ -1,0 +1,99 @@
+name: Keep Streamlit Awake
+
+# Streamlit Community Cloud puts apps to sleep after inactivity.
+# A plain HTTP ping (UptimeRobot, cron-job.org, etc.) only hits the
+# wake-up landing page and does NOT actually wake the app. This workflow
+# loads the app in a real headless Chromium so the JS runs, a real
+# session is registered, and any "wake me up" button gets clicked.
+
+on:
+  schedule:
+    # GitHub Actions cron is in UTC and is best-effort — actual run cadence
+    # is usually 10–15 min even with */5. */8 keeps us inside Streamlit's
+    # idle window without spamming the runner.
+    - cron: '*/8 * * * *'
+  workflow_dispatch: # allow manual trigger from the Actions tab
+
+# Cancel a previous in-flight run if a new schedule fires so they don't pile up
+concurrency:
+  group: keep-awake
+  cancel-in-progress: true
+
+jobs:
+  visit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null
+          npm i -D playwright@latest >/dev/null
+          npx playwright install --with-deps chromium
+
+      - name: Visit the app and wake it if asleep
+        env:
+          APP_URL: https://fire-nico.streamlit.app/
+        run: |
+          cat <<'EOF' > wake.js
+          const { chromium } = require('playwright');
+
+          (async () => {
+            const url = process.env.APP_URL;
+            const browser = await chromium.launch();
+            const ctx = await browser.newContext({
+              userAgent:
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 ' +
+                '(KHTML, like Gecko) Chrome/120 Safari/537.36',
+            });
+            const page = await ctx.newPage();
+
+            console.log('Visiting', url);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+            // If the app is asleep, Streamlit shows a button like
+            // "Yes, get this app back up!" — click whichever variant exists.
+            const wakeSelectors = [
+              'button:has-text("get this app back up")',
+              'button:has-text("Yes, get this app back up")',
+              'button:has-text("wake")',
+            ];
+
+            let woke = false;
+            for (const sel of wakeSelectors) {
+              const btn = page.locator(sel).first();
+              if (await btn.count()) {
+                console.log('Found wake button:', sel);
+                await btn.click({ timeout: 5000 }).catch(() => {});
+                woke = true;
+                break;
+              }
+            }
+
+            if (woke) {
+              console.log('Clicked wake button, waiting for app to come up...');
+              // Wait for Streamlit's main app DOM to appear
+              await page
+                .waitForSelector('[data-testid="stAppViewContainer"], .stApp, [data-testid="stApp"]', {
+                  timeout: 120000,
+                })
+                .catch(() => console.log('Did not see main app container in time'));
+            } else {
+              console.log('App was already awake');
+            }
+
+            // Sit on the page for a bit so Streamlit registers an active session
+            await page.waitForTimeout(8000);
+
+            await browser.close();
+            console.log('Done');
+          })().catch((err) => {
+            console.error('Failed:', err);
+            process.exit(1);
+          });
+          EOF
+          node wake.js
