@@ -1,0 +1,49 @@
+name: Refresh roster cache
+
+# The app fetches live data itself and only falls back to the committed parquet
+# when Basketball-Reference is unreachable. This job keeps that fallback current
+# so a blocked fetch degrades to yesterday's rosters instead of April's.
+
+on:
+  schedule:
+    # 11:00 UTC daily — after US evening transactions have been posted.
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: refresh-rosters
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the data dependencies only
+        # The solver stack (ortools, pysat, pulp) is not needed to build a
+        # dataset, and skipping it keeps this job quick.
+        run: pip install pandas pyarrow lxml requests nba_api
+
+      - name: Rebuild the cache
+        run: python data_fetcher.py --refresh
+
+      - name: Commit if the league changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .cache/nba_*.parquet
+          if git diff --cached --quiet; then
+            echo "No roster changes."
+            exit 0
+          fi
+          git commit -m "Refresh roster cache ($(date -u +%Y-%m-%d))"
+          git push

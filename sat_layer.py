@@ -199,8 +199,19 @@ class SATFeasibilityChecker:
 
             n_a = len(roster_a)
             n_b = len(roster_b)
-            lo = self.config.min_roster_size
-            hi = self.config.max_roster_size
+
+            # The 13-20 roster band is a regular-season requirement, and real
+            # rosters sit outside it in the offseason: teams carry fewer than 13
+            # until camp, and some carry more than 20 on non-guaranteed deals. A
+            # team already outside the band is not barred from trading, it just
+            # may not move further out. Clamping each bound to the roster the
+            # team actually has expresses that; without it the bound goes
+            # negative, the encoder emits an empty clause, and every trade
+            # involving that team reports INFEASIBLE no matter what it is.
+            lo_cfg = self.config.min_roster_size
+            hi_cfg = self.config.max_roster_size
+            lo_a, hi_a = min(lo_cfg, n_a), max(hi_cfg, n_a)
+            lo_b, hi_b = min(lo_cfg, n_b), max(hi_cfg, n_b)
 
             top_id = next_var[0] - 1  # highest var used so far
 
@@ -224,35 +235,39 @@ class SATFeasibilityChecker:
                     cnf.append(clause)
                 top_id = enc.nv  # update top variable counter
 
-            # Team A roster bounds:
-            #   final_A = n_a - Σxa + Σxb   must be in [lo, hi]
-            #   Σxa ≤ n_a - lo               (can't trade away so many A players
-            #                                  that roster falls below min)
-            #   Σxb ≤ hi - n_a + Σxa        (can't receive so many B players
-            #                                  that roster exceeds max)
-            # The second constraint is dynamic (depends on Σxa), so we approximate
-            # with the worst case: Σxb ≤ hi - n_a + len(candidates_from_a)
-            add_atmost(
-                lits_a,
-                n_a - lo,
-                f"ROSTER: Sending too many players would drop {roster_a[0].team if roster_a else 'TeamA'} below {lo}.",
-            )
-            add_atmost(
-                lits_b,
-                hi - n_b + len(candidates_from_b),
-                f"ROSTER: Receiving too many players would push {roster_b[0].team if roster_b else 'TeamB'} above {hi}.",
-            )
+            # Roster bounds. For team A:
+            #   final_A = n_a - Σxa + Σxb   must be in [lo_a, hi_a]
+            #     floor:   Σxa ≤ n_a - lo_a + Σxb   (can't send so many that A
+            #                                        drops below its minimum)
+            #     ceiling: Σxb ≤ hi_a - n_a + Σxa   (can't receive so many that
+            #                                        A exceeds its maximum)
+            # Each bound depends on the other side's sum, so both are relaxed to
+            # the worst case by adding the opposing candidate-pool size — the
+            # approximation this layer already used for the ceilings.
+            #
+            # Two things had to change for live rosters. The floors previously
+            # used the strict `n - lo` and so told a team sitting at the minimum
+            # it could send nobody, even in a one-for-one swap. And each ceiling
+            # constrained the sending team's own literals rather than the
+            # receiving side's, so it bounded the wrong sum entirely.
+            team_a_name = roster_a[0].team if roster_a else "TeamA"
+            team_b_name = roster_b[0].team if roster_b else "TeamB"
 
-            # Team B roster bounds (symmetric):
             add_atmost(
-                lits_b,
-                n_b - lo,
-                f"ROSTER: Sending too many players would drop {roster_b[0].team if roster_b else 'TeamB'} below {lo}.",
+                lits_a, n_a - lo_a + len(candidates_from_b),
+                f"ROSTER: Sending too many players would drop {team_a_name} below {lo_a}.",
             )
             add_atmost(
-                lits_a,
-                hi - n_a + len(candidates_from_a),
-                f"ROSTER: Receiving too many players would push {roster_a[0].team if roster_a else 'TeamA'} above {hi}.",
+                lits_b, hi_a - n_a + len(candidates_from_a),
+                f"ROSTER: Receiving too many players would push {team_a_name} above {hi_a}.",
+            )
+            add_atmost(
+                lits_b, n_b - lo_b + len(candidates_from_a),
+                f"ROSTER: Sending too many players would drop {team_b_name} below {lo_b}.",
+            )
+            add_atmost(
+                lits_a, hi_b - n_b + len(candidates_from_b),
+                f"ROSTER: Receiving too many players would push {team_b_name} above {hi_b}.",
             )
 
             # Update next_var counter so it stays consistent
@@ -351,17 +366,22 @@ class SATFeasibilityChecker:
 
         final_a = len(roster_a) - len(tradeable_from_a) + len(tradeable_from_b)
         final_b = len(roster_b) - len(tradeable_from_b) + len(tradeable_from_a)
-        lo, hi = self.config.min_roster_size, self.config.max_roster_size
+        # Same offseason clamp as the SAT path: a team already outside the
+        # regular-season band may not move further out, but is not blocked.
+        lo_a = min(self.config.min_roster_size, len(roster_a))
+        hi_a = max(self.config.max_roster_size, len(roster_a))
+        lo_b = min(self.config.min_roster_size, len(roster_b))
+        hi_b = max(self.config.max_roster_size, len(roster_b))
 
-        if not (lo <= final_a <= hi):
+        if not (lo_a <= final_a <= hi_a):
             violations.append(
                 f"ROSTER SIZE: {roster_a[0].team if roster_a else 'TeamA'} "
-                f"would have {final_a} players (need {lo}-{hi})."
+                f"would have {final_a} players (need {lo_a}-{hi_a})."
             )
-        if not (lo <= final_b <= hi):
+        if not (lo_b <= final_b <= hi_b):
             violations.append(
                 f"ROSTER SIZE: {roster_b[0].team if roster_b else 'TeamB'} "
-                f"would have {final_b} players (need {lo}-{hi})."
+                f"would have {final_b} players (need {lo_b}-{hi_b})."
             )
 
         feasible = len([v for v in violations if "SAT" not in v and "ROSTER SIZE" in v]) == 0
@@ -382,17 +402,18 @@ class SATFeasibilityChecker:
 # Quick self-test
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    from data_fetcher import get_lakers_roster, get_nets_roster, _DEMO_PLAYERS
+    from data_fetcher import get_demo_players, get_lakers_roster, get_nets_roster
 
     cfg = ConstraintsConfig()
     checker = SATFeasibilityChecker(cfg)
 
+    demo   = get_demo_players()
     lakers = get_lakers_roster()
     nets   = get_nets_roster()
 
     # Demo: Nets send Ben Simmons → Lakers; Lakers send Anthony Davis → Nets
-    from_nets   = [_DEMO_PLAYERS["ben_simmons"]]
-    from_lakers = [_DEMO_PLAYERS["anthony_davis"]]
+    from_nets   = [demo["ben_simmons"]]
+    from_lakers = [demo["anthony_davis"]]
 
     result = checker.check(lakers, nets, from_lakers, from_nets)
     print(result)

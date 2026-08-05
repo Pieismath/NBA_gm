@@ -11,8 +11,10 @@ dist/
 venv/
 env/
 
-# Cached datasets — ignore everything in .cache/ EXCEPT nba_*.parquet, which
-# we ship so Streamlit Cloud has data (stats.nba.com blocks GCP IPs).
+# Cached datasets — ignore everything in .cache/ EXCEPT nba_*.parquet. That one
+# is committed as a *fallback* for Streamlit Cloud, not as the source of truth:
+# the app fetches live and only reads it when Basketball-Reference is
+# unreachable. .github/workflows/refresh-rosters.yml keeps it current.
 .cache/*
 !.cache/nba_*.parquet
 

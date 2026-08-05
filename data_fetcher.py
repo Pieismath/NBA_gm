@@ -1,17 +1,28 @@
 """
 Pulls full-league NBA data from Basketball-Reference (all 30 teams) and
-joins per-game, advanced, and contract tables into one dataset. Cached to
-.cache/nba_<season>.parquet on first run so subsequent runs are instant.
+joins contract, per-game, and advanced tables into one dataset. Cached to
+.cache/nba_<season>.parquet, with a freshness window so the cache never
+silently serves a stale league.
 
-There is a small hardcoded `_DEMO_PLAYERS` pool at the bottom so the CLI
-demo runs even with no network on a fresh machine.
+The *roster spine* is the Basketball-Reference contracts page. That page
+lists every player under contract with the team they are currently on and
+their salary for the current league year, so it reflects trades and free
+agency the moment BBR posts them. Per-game and advanced stats are joined
+on top from the most recent season that has actually been played — during
+the offseason that is last season, because the upcoming one has no box
+scores yet.
+
+There is a small hardcoded fallback pool at the bottom (see
+`get_demo_players`) so the CLI demo runs even with no network.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -59,6 +70,10 @@ class PlayerRecord:
 CACHE_DIR = Path(__file__).parent / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
+# How long a cached parquet stays trusted before we refetch. Rosters move
+# daily in the offseason, so a shipped cache is a seed, not a source of truth.
+CACHE_MAX_AGE_HOURS = 24.0
+
 # Curated set of well-known NTC holders (public knowledge, approximate).
 # Real NTC status is a CBA detail not published on bbref; this is a demo proxy.
 _KNOWN_NTC = {
@@ -81,6 +96,47 @@ TEAM_NAMES = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Season detection
+#
+# A season is identified by its *ending* year, matching Basketball-Reference:
+# the 2026-27 season is "2027". Two different seasons matter here and they are
+# not the same during the offseason:
+#
+#   current_season()      which league year the rosters and salaries belong to
+#   latest_stats_season() which season actually has box scores to join on
+#
+# In August 2026 those are 2027 and 2026 respectively: contracts are for
+# 2026-27, but the only games played are 2025-26's.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def current_season(today: Optional[date] = None) -> int:
+    """Season whose rosters and salaries are in force right now.
+
+    The NBA league year flips on July 1, when new contracts and free-agent
+    signings take effect, so July onward belongs to the next season.
+    """
+    d = today or date.today()
+    return d.year + 1 if d.month >= 7 else d.year
+
+
+def latest_stats_season(today: Optional[date] = None) -> int:
+    """Most recent season that has been played, so has per-game/advanced data.
+
+    Before opening night (mid-to-late October) the current season has no box
+    scores, so the previous one is the newest with anything to join.
+    """
+    d = today or date.today()
+    season = current_season(d)
+    tipped_off = d.month >= 11 or d.month <= 6 or (d.month == 10 and d.day >= 20)
+    return season if tipped_off else season - 1
+
+
+def season_label(season: int) -> str:
+    """BBR season number to the human label: 2027 -> '2026-27'."""
+    return f"{season - 1}-{str(season)[-2:]}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Basketball-Reference scrapers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -94,16 +150,32 @@ def _parse_salary(raw) -> float:
         return 0.0
 
 
+def _dedupe_players(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per player, preferring the full-season total for traded players.
+
+    A player dealt mid-season gets one row per team plus a combined "2TM"/"3TM"
+    row that BBR lists first. That combined row is the one we want — it is the
+    player's whole season — so sort the aggregates to the front and keep those.
+    """
+    df = df.copy()
+    df["_is_total"] = df["Team"].astype(str).str.endswith("TM")
+    df = df.sort_values("_is_total", ascending=False, kind="stable")
+    df = df.drop_duplicates(subset=["Player"], keep="first")
+    return df.drop(columns=["_is_total"])
+
+
 def _fetch_per_game(season: int) -> pd.DataFrame:
+    """Per-game box score stats. Team is deliberately dropped: it is where the
+    player played *last* season, which is exactly the stale-roster trap. The
+    contracts page supplies the current team instead."""
     url = f"https://www.basketball-reference.com/leagues/NBA_{season}_per_game.html"
     df = pd.read_html(url)[0]
     df = df[df["Rk"] != "Rk"].copy()           # drop repeated headers
     df = df.dropna(subset=["Player"])
-    # Keep one row per player (their aggregated row when traded mid-season is team "2TM"/"3TM")
-    df = df.drop_duplicates(subset=["Player"], keep="first")
+    df = _dedupe_players(df)
     df["Age"] = pd.to_numeric(df["Age"], errors="coerce").fillna(25).astype(int)
-    return df[["Player", "Age", "Team", "Pos", "PTS", "TRB", "AST"]].rename(
-        columns={"Player": "name", "Age": "age", "Team": "team",
+    return df[["Player", "Age", "Pos", "PTS", "TRB", "AST"]].rename(
+        columns={"Player": "name", "Age": "age",
                  "Pos": "position", "PTS": "pts", "TRB": "trb", "AST": "ast"}
     )
 
@@ -113,7 +185,7 @@ def _fetch_advanced(season: int) -> pd.DataFrame:
     df = pd.read_html(url)[0]
     df = df[df["Rk"] != "Rk"].copy()
     df = df.dropna(subset=["Player"])
-    df = df.drop_duplicates(subset=["Player"], keep="first")
+    df = _dedupe_players(df)
     for col in ["TS%", "BPM", "VORP"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     return df[["Player", "TS%", "BPM", "VORP"]].rename(
@@ -121,26 +193,44 @@ def _fetch_advanced(season: int) -> pd.DataFrame:
     )
 
 
-def _fetch_contracts() -> pd.DataFrame:
+def _fetch_contracts(season: int) -> pd.DataFrame:
+    """Every player under contract, with their current team and salary.
+
+    This is the roster spine. The `Tm` column is BBR's live team assignment,
+    so a player traded yesterday already shows up on their new team here.
+    """
     url = "https://www.basketball-reference.com/contracts/players.html"
     df = pd.read_html(url)[0]
     df.columns = [c[1] if isinstance(c, tuple) else c for c in df.columns]
     df = df[df["Player"].notna() & (df["Player"] != "Player")].copy()
     df = df.drop_duplicates(subset=["Player"], keep="first")
-    # Grab the current-season salary column (first "20xx-xx" header)
+
+    # Prefer the column for the season we asked for; fall back to the leftmost
+    # "20xx-xx" header, which is whatever BBR currently treats as this year.
     season_cols = [c for c in df.columns if isinstance(c, str) and "-" in c and c[:2] == "20"]
     if not season_cols:
-        return pd.DataFrame(columns=["name", "salary"])
-    current = season_cols[0]
+        return pd.DataFrame(columns=["name", "team", "salary"])
+    wanted = season_label(season)
+    current = wanted if wanted in season_cols else season_cols[0]
+    if current != wanted:
+        print(f"[data_fetcher] Contracts page has no {wanted} column; using {current}.")
+
     df["salary"] = df[current].apply(_parse_salary)
-    return df[["Player", "salary"]].rename(columns={"Player": "name"})
+    df["team"] = df["Tm"].apply(_normalize_team) if "Tm" in df.columns else ""
+    return df[["Player", "team", "salary"]].rename(columns={"Player": "name"})
+
+
+# nba_api reports coarse positions ("G", "F", "C", "G-F"); the valuation model
+# and positional-need vectors are keyed on the five BBR slots.
+_COARSE_POSITION = {"G": "SG", "F": "SF", "C": "C"}
 
 
 def _clean_position(pos: str) -> str:
-    if not isinstance(pos, str):
+    if not isinstance(pos, str) or not pos.strip():
         return "SF"
-    # Multi-position rows like "PG-SG" → take first
-    return pos.split("-")[0].strip() or "SF"
+    # Multi-position rows like "PG-SG" or "G-F" → take the first listed
+    first = pos.split("-")[0].strip()
+    return _COARSE_POSITION.get(first, first) or "SF"
 
 
 def _normalize_team(t: str) -> str:
@@ -159,9 +249,9 @@ def _normalize_team(t: str) -> str:
 # nba_api team abbreviations → Basketball-Reference abbreviations where they diverge.
 _NBA_TO_BBR = {"BKN": "BRK", "PHX": "PHO", "CHA": "CHO"}
 
-# nba_api season string for a BBR season number (bbref "2026" == NBA "2025-26").
+# nba_api season string for a BBR season number (bbref "2027" == NBA "2026-27").
 def _nba_season_str(season: int) -> str:
-    return f"{season - 1}-{str(season)[-2:]}"
+    return season_label(season)
 
 
 def _normalize_name(n: str) -> str:
@@ -177,24 +267,34 @@ def _normalize_name(n: str) -> str:
 def _fetch_nba_rosters(season: int) -> pd.DataFrame:
     """Pull current rosters from stats.nba.com via nba_api.
 
-    Returns DataFrame with columns: name, name_key, team (BBR abbr), jersey_num, nba_player_id.
+    Returns DataFrame with columns: name, name_key, team (BBR abbr), jersey_num,
+    position, age, nba_player_id.
+
+    Best-effort: stats.nba.com blocks most datacenter IPs, so this returns empty
+    on Streamlit Cloud. Callers must treat it as a supplement, never a source.
     """
+    empty = pd.DataFrame(columns=["name", "name_key", "team", "jersey_num",
+                                  "position", "age", "nba_player_id"])
     try:
         from nba_api.stats.endpoints import CommonTeamRoster
         from nba_api.stats.static import teams as nba_teams
     except ImportError:
         print("[data_fetcher] nba_api not installed; skipping live roster merge.")
-        return pd.DataFrame(columns=["name", "name_key", "team", "jersey_num", "nba_player_id"])
+        return empty
 
     season_str = _nba_season_str(season)
     rows = []
+    failures = 0
     for t in nba_teams.get_teams():
         nba_abbr = t["abbreviation"]
         bbr_abbr = _NBA_TO_BBR.get(nba_abbr, nba_abbr)
         try:
             r = CommonTeamRoster(team_id=t["id"], season=season_str, timeout=15).get_data_frames()[0]
         except Exception as e:
-            print(f"[data_fetcher] nba_api failed for {nba_abbr}: {e}")
+            failures += 1
+            # One line per team is noise when the whole endpoint is blocked.
+            if failures == 1:
+                print(f"[data_fetcher] nba_api failed for {nba_abbr}: {e}")
             continue
         for _, row in r.iterrows():
             rows.append({
@@ -202,68 +302,95 @@ def _fetch_nba_rosters(season: int) -> pd.DataFrame:
                 "name_key": _normalize_name(row["PLAYER"]),
                 "team": bbr_abbr,
                 "jersey_num": str(row.get("NUM", "")).strip() or "--",
+                "position": str(row.get("POSITION", "") or ""),
+                "age": int(row["AGE"]) if pd.notna(row.get("AGE")) else 0,
                 "nba_player_id": int(row["PLAYER_ID"]) if pd.notna(row["PLAYER_ID"]) else 0,
             })
         time.sleep(0.6)  # courtesy pause; stats.nba.com rate-limits aggressively
-    return pd.DataFrame(rows)
+    if failures:
+        print(f"[data_fetcher] nba_api unreachable for {failures}/30 teams.")
+    return pd.DataFrame(rows) if rows else empty
 
 
-def _build_dataset(season: int) -> pd.DataFrame:
-    print(f"[data_fetcher] Fetching per-game…")
-    pg = _fetch_per_game(season)
-    time.sleep(0.8)  # courtesy pause
-    print(f"[data_fetcher] Fetching advanced…")
-    adv = _fetch_advanced(season)
+def _stable_months_since_signing(name: str) -> int:
+    """Deterministic 6-35 month spread, used as a stand-in for real signing dates.
+
+    Python's built-in hash() is salted per process (PYTHONHASHSEED), so using it
+    here made a player "recently signed" — and therefore untradeable — on one run
+    and freely tradeable on the next. md5 keeps the flag reproducible across runs
+    and machines, which the benchmarks in the report depend on.
+    """
+    digest = hashlib.md5(name.encode("utf-8")).hexdigest()
+    return 6 + (int(digest[:8], 16) % 30)
+
+
+def _build_dataset(season: int, stats_season: Optional[int] = None) -> pd.DataFrame:
+    """Join live contracts (who is on which team, for how much) with the most
+    recently played season's stats."""
+    if stats_season is None:
+        stats_season = latest_stats_season()
+
+    print(f"[data_fetcher] Building {season_label(season)} rosters "
+          f"with {season_label(stats_season)} stats…")
+
+    print("[data_fetcher] Fetching contracts (live rosters + salaries)…")
+    contracts = _fetch_contracts(season)
+    if contracts.empty:
+        raise RuntimeError("contracts page returned no rows")
+    time.sleep(0.8)  # courtesy pause; BBR rate-limits
+
+    print("[data_fetcher] Fetching per-game…")
+    pg = _fetch_per_game(stats_season)
     time.sleep(0.8)
-    print(f"[data_fetcher] Fetching contracts…")
-    contracts = _fetch_contracts()
+    print("[data_fetcher] Fetching advanced…")
+    adv = _fetch_advanced(stats_season)
 
-    df = pg.merge(adv, on="name", how="left")
-    df = df.merge(contracts, on="name", how="left")
+    stats = pg.merge(adv, on="name", how="left")
 
-    df["salary"] = df["salary"].fillna(0.0)
+    # Contracts drive the join: a player on a roster with no stats (rookie,
+    # returning from injury) still belongs on the team. A player with stats but
+    # no contract has left the league and should not appear.
+    df = contracts.merge(stats, on="name", how="left")
+
+    # Stats are from last season, so everyone is a year older now.
+    seasons_elapsed = max(0, season - stats_season)
+    df["age"] = pd.to_numeric(df["age"], errors="coerce").fillna(24) + seasons_elapsed
+    df["age"] = df["age"].astype(int)
+
     df["bpm"] = df["bpm"].fillna(0.0)
     df["vorp"] = df["vorp"].fillna(0.0)
     df["ts_pct"] = df["ts_pct"].fillna(0.55)
+    for col in ("pts", "trb", "ast"):
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    df["salary"] = df["salary"].fillna(0.0)
     df["position"] = df["position"].apply(_clean_position)
-    df["team"] = df["team"].apply(_normalize_team)
 
-    # ── nba_api supplement: override team + jersey number with live roster ──
-    print(f"[data_fetcher] Fetching live rosters from nba_api (30 teams)…")
+    # ── nba_api supplement: jersey numbers, plus anyone contracts missed ──
+    # Best-effort only. stats.nba.com blocks most cloud IPs, so Streamlit Cloud
+    # normally gets nothing here — the dataset must stand up without it.
+    print("[data_fetcher] Fetching live rosters from nba_api (30 teams)…")
     nba_df = _fetch_nba_rosters(season)
     if not nba_df.empty:
         df["name_key"] = df["name"].apply(_normalize_name)
-        nba_lookup = nba_df.set_index("name_key")[["team", "jersey_num"]].to_dict("index")
+        jersey = nba_df.set_index("name_key")["jersey_num"].to_dict()
+        df["jersey_num"] = df["name_key"].map(jersey).fillna("")
 
-        # Override BBR team with nba_api's current team (handles mid-season trades).
-        # Add jersey number. If nba_api doesn't have the player, keep BBR team + no jersey.
-        def _apply_live(row):
-            info = nba_lookup.get(row["name_key"])
-            if info is None:
-                return row["team"], ""
-            return info["team"], info["jersey_num"]
-        live = df.apply(_apply_live, axis=1)
-        df["team"] = [t for t, _ in live]
-        df["jersey_num"] = [j for _, j in live]
+        # Players nba_api lists but contracts does not are camp invites and
+        # Exhibit-10 deals with no guaranteed money. They are deliberately left
+        # out: a $0 player can satisfy salary matching for free, which would let
+        # the optimizer "balance" any trade with filler that does not exist.
+        extras = (~nba_df["name_key"].isin(set(df["name_key"]))).sum()
         df = df.drop(columns=["name_key"])
-
-        # Also: add nba_api-only players BBR missed (rookies signed late, two-ways)
-        existing = set(df["name"].apply(_normalize_name))
-        extras = nba_df[~nba_df["name_key"].isin(existing)]
-        if not extras.empty:
-            extras = extras.rename(columns={})
-            for _, r in extras.iterrows():
-                df = pd.concat([df, pd.DataFrame([{
-                    "name": r["name"], "team": r["team"], "position": "SF",
-                    "age": 25, "pts": 0.0, "trb": 0.0, "ast": 0.0,
-                    "ts_pct": 0.55, "bpm": 0.0, "vorp": 0.0,
-                    "salary": 0.0, "jersey_num": r["jersey_num"],
-                }])], ignore_index=True)
+        if extras:
+            print(f"[data_fetcher] Skipped {extras} nba_api players with no contract.")
     else:
+        print("[data_fetcher] nba_api unavailable; continuing with contracts data only.")
         df["jersey_num"] = ""
 
-    # Filter to current-roster players: require a non-empty team code
+    # Filter to players actually rostered: require a real team code
     df = df[df["team"].isin(TEAM_NAMES.keys())].copy()
+    if df.empty:
+        raise RuntimeError("no rostered players survived the join")
 
     # Assign stable pseudo IDs
     df = df.reset_index(drop=True)
@@ -271,12 +398,14 @@ def _build_dataset(season: int) -> pd.DataFrame:
 
     # NTC heuristic
     df["has_ntc"] = df["name"].isin(_KNOWN_NTC)
+    df["months_since_signing"] = df["name"].apply(_stable_months_since_signing)
 
-    # Months-since-signing heuristic: spread deterministically by name hash
-    df["months_since_signing"] = df["name"].apply(
-        lambda n: 6 + (abs(hash(n)) % 30)   # 6-35 months
-    )
+    # Provenance, so the UI can show how fresh this is and what it is made of.
+    df["season"] = season
+    df["stats_season"] = stats_season
+    df["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+    print(f"[data_fetcher] Built {len(df)} players across {df['team'].nunique()} teams.")
     return df
 
 
@@ -284,14 +413,47 @@ def _cache_path(season: int) -> Path:
     return CACHE_DIR / f"nba_{season}.parquet"
 
 
-def load_dataset(season: int = 2026, force_refresh: bool = False) -> pd.DataFrame:
-    """Load (and cache) the joined league dataset."""
+def cache_age_hours(season: int) -> Optional[float]:
+    """Age of the cached dataset in hours, or None if there is no usable cache."""
     cache = _cache_path(season)
+    if not cache.exists():
+        return None
+    try:
+        stamp = pd.read_parquet(cache, columns=["fetched_at"])["fetched_at"].iloc[0]
+        fetched = datetime.fromisoformat(str(stamp))
+    except Exception:
+        # Cache predates the fetched_at stamp; treat it as indefinitely old so
+        # it gets refreshed rather than trusted forever.
+        return float("inf")
+    delta = datetime.now(timezone.utc) - fetched
+    return delta.total_seconds() / 3600.0
+
+
+def load_dataset(
+    season: Optional[int] = None,
+    force_refresh: bool = False,
+    max_age_hours: float = CACHE_MAX_AGE_HOURS,
+) -> pd.DataFrame:
+    """Load the joined league dataset for `season`, refetching a stale cache.
+
+    Defaults to whatever season is in force today rather than a pinned year.
+    A cache older than `max_age_hours` is refetched; if that refetch fails the
+    stale copy is still returned, because old rosters beat no rosters.
+    """
+    if season is None:
+        season = current_season()
+
+    cache = _cache_path(season)
+    cached: Optional[pd.DataFrame] = None
     if cache.exists() and not force_refresh:
         try:
-            return pd.read_parquet(cache)
+            cached = pd.read_parquet(cache)
+            age = cache_age_hours(season)
+            if age is not None and age <= max_age_hours:
+                return cached
+            print(f"[data_fetcher] Cache for {season_label(season)} is stale; refreshing.")
         except Exception:
-            pass
+            cached = None
 
     try:
         df = _build_dataset(season)
@@ -301,7 +463,11 @@ def load_dataset(season: int = 2026, force_refresh: bool = False) -> pd.DataFram
             print(f"[data_fetcher] Could not cache parquet ({e}); continuing.")
         return df
     except Exception as e:
-        print(f"[data_fetcher] Network fetch failed ({e}); falling back to demo data.")
+        print(f"[data_fetcher] Live fetch failed ({e}).")
+        if cached is not None:
+            print("[data_fetcher] Serving the stale cache instead.")
+            return cached
+        print("[data_fetcher] Falling back to the offline demo pool.")
         return _demo_dataframe()
 
 
@@ -326,24 +492,56 @@ def _row_to_record(row) -> PlayerRecord:
     )
 
 
-def get_all_players(season: int = 2026, force_refresh: bool = False) -> list[PlayerRecord]:
+def get_all_players(season: Optional[int] = None, force_refresh: bool = False) -> list[PlayerRecord]:
     df = load_dataset(season, force_refresh=force_refresh)
     return [_row_to_record(r) for _, r in df.iterrows()]
 
 
-def get_team_roster(abbr: str, season: int = 2026) -> list[PlayerRecord]:
+def get_team_roster(abbr: str, season: Optional[int] = None) -> list[PlayerRecord]:
     df = load_dataset(season)
     sub = df[df["team"] == abbr]
     return [_row_to_record(r) for _, r in sub.iterrows()]
 
 
-def get_all_teams(season: int = 2026) -> list[tuple[str, str, int]]:
+def get_all_teams(season: Optional[int] = None) -> list[tuple[str, str, int]]:
     """Return [(abbr, display_name, roster_size), ...] sorted by display name."""
     df = load_dataset(season)
     counts = df.groupby("team").size().to_dict()
     out = [(abbr, TEAM_NAMES[abbr], counts.get(abbr, 0)) for abbr in TEAM_NAMES]
     out = [t for t in out if t[2] > 0]
     return sorted(out, key=lambda x: x[1])
+
+
+def dataset_provenance(df: pd.DataFrame) -> dict:
+    """Where this dataset came from, for display in the UI.
+
+    Returns season/stats_season labels, the UTC fetch timestamp, and whether
+    the rows are live or the offline demo pool.
+    """
+    def _first(col, default=None):
+        if col not in df.columns or df.empty:
+            return default
+        val = df[col].iloc[0]
+        return default if pd.isna(val) else val
+
+    season = _first("season")
+    stats = _first("stats_season")
+    fetched = _first("fetched_at")
+    age_hours = None
+    if fetched:
+        try:
+            age_hours = (datetime.now(timezone.utc)
+                         - datetime.fromisoformat(str(fetched))).total_seconds() / 3600.0
+        except Exception:
+            age_hours = None
+    return {
+        "season": int(season) if season else None,
+        "season_label": season_label(int(season)) if season else "unknown",
+        "stats_season_label": season_label(int(stats)) if stats else "unknown",
+        "fetched_at": str(fetched) if fetched else None,
+        "age_hours": age_hours,
+        "is_live": season is not None,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,8 +557,10 @@ def _demo_dataframe() -> pd.DataFrame:
             "position": p.position, "age": p.age, "salary": p.salary,
             "bpm": p.bpm, "vorp": p.vorp, "ts_pct": p.ts_pct,
             "has_ntc": p.has_ntc, "months_since_signing": p.months_since_signing,
-            "pts": 0.0, "trb": 0.0, "ast": 0.0,
+            "pts": 0.0, "trb": 0.0, "ast": 0.0, "jersey_num": "",
         })
+    # No season/fetched_at columns: dataset_provenance() reports is_live=False
+    # off their absence, so the UI can say plainly that this is not live data.
     return pd.DataFrame(rows)
 
 
@@ -417,9 +617,23 @@ def get_team_roster_live(team_abbr: str):
 
 
 if __name__ == "__main__":
-    players = get_all_players()
-    print(f"\nTotal players loaded: {len(players)}")
-    teams = get_all_teams()
-    print(f"Teams: {len(teams)}")
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Fetch and inspect the league dataset.")
+    ap.add_argument("--refresh", action="store_true", help="ignore the cache and refetch")
+    ap.add_argument("--season", type=int, default=None, help="season ending year, e.g. 2027")
+    args = ap.parse_args()
+
+    season = args.season or current_season()
+    print(f"Current season : {season_label(season)}")
+    print(f"Stats season   : {season_label(latest_stats_season())}")
+
+    df = load_dataset(season, force_refresh=args.refresh)
+    prov = dataset_provenance(df)
+    print(f"\nProvenance     : {prov}")
+    print(f"Total players  : {len(df)}")
+
+    teams = get_all_teams(season)
+    print(f"Teams          : {len(teams)}")
     for abbr, name, n in teams[:5]:
         print(f"  {abbr}  {name:30s}  {n} players")

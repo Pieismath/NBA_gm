@@ -24,8 +24,15 @@ import plotly.graph_objects as go
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from constraints_config import ConstraintsConfig
-from data_fetcher import PlayerRecord, get_all_teams, load_dataset
+from constraints_config import CAP_LEVELS, ConstraintsConfig, FIRST_APRON
+from data_fetcher import (
+    PlayerRecord,
+    current_season,
+    dataset_provenance,
+    get_all_teams,
+    load_dataset,
+    season_label,
+)
 from sat_layer import SATFeasibilityChecker
 from valuation_model import PlayerValuationModel, TeamContext
 from mip_layer import solve_both
@@ -644,10 +651,17 @@ st.markdown(f"""
 # Cached loaders
 # ─────────────────────────────────────────────────────────────────────────────
 
-@st.cache_data(show_spinner="Loading NBA data…")
-def _load_all():
-    df = load_dataset(2025)
-    teams = get_all_teams(2025)
+@st.cache_data(ttl=60 * 60, show_spinner="Loading NBA data…")
+def _load_all(season: int, refresh_token: int = 0):
+    """Load the league for `season`.
+
+    `refresh_token` doubles as a cache key and a signal: the sidebar bumps it,
+    which both busts Streamlit's memo (args are the key) and tells the fetcher
+    to ignore the on-disk parquet. The one-hour TTL keeps a long-lived Cloud
+    session from pinning day-old rosters even if nobody presses the button.
+    """
+    df = load_dataset(season, force_refresh=refresh_token > 0)
+    teams = get_all_teams(season)
     return df, teams
 
 
@@ -666,6 +680,9 @@ def _roster(df: pd.DataFrame, abbr: str) -> List[PlayerRecord]:
             position=str(r["position"]), age=int(r["age"]), salary=float(r["salary"]),
             bpm=float(r["bpm"]), vorp=float(r["vorp"]), ts_pct=float(r["ts_pct"]),
             has_ntc=bool(r["has_ntc"]), months_since_signing=int(r["months_since_signing"]),
+            # Without this the picker labels every player "#--", because
+            # _player_option_label reads a jersey_num that was never populated.
+            jersey_num=str(r.get("jersey_num", "") or ""),
         )
         for _, r in sub.iterrows()
     ]
@@ -709,8 +726,32 @@ def strip_cell(label: str, value: str, note: str = "", tone: str = "") -> str:
 # Load
 # ─────────────────────────────────────────────────────────────────────────────
 
-df, teams = _load_all()
+SEASON = current_season()
+if "refresh_token" not in st.session_state:
+    st.session_state["refresh_token"] = 0
+
+df, teams = _load_all(SEASON, st.session_state["refresh_token"])
+prov = dataset_provenance(df)
 model = _get_model()
+
+
+def _freshness_line() -> str:
+    """One-line description of exactly which league this is looking at."""
+    if not prov["is_live"]:
+        return "offline demo pool — live fetch unavailable"
+    age = prov["age_hours"]
+    if age is None:
+        when = "just now"
+    elif age < 1:
+        when = f"{int(age * 60)} min ago"
+    elif age < 48:
+        when = f"{age:.0f}h ago"
+    else:
+        when = f"{age / 24:.0f}d ago"
+    return (
+        f"{prov['season_label']} rosters &amp; salaries · "
+        f"{prov['stats_season_label']} stats · updated {when}"
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hero
@@ -724,7 +765,7 @@ st.markdown(
     f'  <div>'
     f'    <div class="gm-eyebrow">NBA TRADE DESK · CIS 1921</div>'
     f'    <div class="gm-title">GM Mode</div>'
-    f'    <div class="gm-sub">{len(df)} players · {len(teams)} teams · live rosters via nba_api + salaries via Basketball-Reference.</div>'
+    f'    <div class="gm-sub">{len(df)} players · {len(teams)} teams · {_freshness_line()}</div>'
     f'  </div>'
     f'</div>',
     unsafe_allow_html=True,
@@ -828,11 +869,31 @@ with st.sidebar:
         enforce_cap    = st.checkbox("Hard cap", value=True)
         enforce_ntc    = st.checkbox("No-trade clauses", value=True)
         enforce_recent = st.checkbox("Recently-signed rule", value=True)
-        cap_limit      = st.number_input("Hard cap ($M)", min_value=50.0, max_value=400.0,
-                                         value=165.0, step=1.0)
+
+        # The CBA has four separate salary lines and only the aprons function as
+        # a hard cap. Defaulting to the $165M salary cap put 27 of 30 real teams
+        # in violation before any trade was proposed.
+        level_names = list(CAP_LEVELS)
+        level = st.selectbox(
+            f"Cap level ({season_label(SEASON)})",
+            level_names,
+            index=level_names.index("First apron"),
+        )
+        cap_limit = st.number_input(
+            "Threshold ($M)", min_value=50.0, max_value=400.0,
+            value=round(CAP_LEVELS[level] / 1e6, 1), step=1.0,
+            help="Prefilled from the CBA level above; override to explore.",
+        )
 
     st.markdown(" ")
     run_clicked = st.button("▶  Run trade", use_container_width=True)
+
+    st.markdown(f'<div class="gm-sidelabel">Data</div>', unsafe_allow_html=True)
+    st.caption(_freshness_line().replace("&amp;", "&"))
+    if st.button("↻  Refresh rosters", use_container_width=True):
+        st.session_state["refresh_token"] += 1
+        _load_all.clear()
+        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1104,7 +1165,7 @@ else:
         f'<div class="gm-how">'
         f'<div class="gm-eyebrow">How it works</div>'
         f'<p style="font-size:14px; margin:6px 0 4px 0; color:{INK};">'
-        f'Pick two teams and the players moving each way, then hit <b>Evaluate</b>. Three layers run:'
+        f'Pick two teams and the players moving each way, then hit <b>Run trade</b>. Three layers run:'
         f'</p>'
         f'<ol>'
         f'<li><b>SAT feasibility</b>:a CDCL solver (pysat) checks the boolean CBA rules.</li>'

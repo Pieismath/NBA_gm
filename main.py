@@ -3,9 +3,10 @@ main.py
 -------
 Entry point for GM Mode: NBA Trade Package Optimizer.
 
-Runs the full three-layer pipeline on the demo scenario:
-  Brooklyn Nets trade Ben Simmons to the Los Angeles Lakers
-  in exchange for Anthony Davis.
+Runs the full three-layer pipeline on a demo trade between two real teams,
+using the current league year's rosters and salaries. The headline players are
+whoever is actually the biggest contract on each side today, so the scenario
+changes as the league does rather than being pinned to one old trade.
 
 Pipeline:
   1. Load player data (data_fetcher.py)
@@ -16,20 +17,33 @@ Pipeline:
   6. Display full results
 
 Also runs a small benchmark on 5 synthetic instances from instance_generator.py.
+
+Usage:
+    python3 main.py                      # live rosters, LAL vs BRK
+    python3 main.py --teams BOS NYK      # any two teams
+    python3 main.py --refresh            # force a refetch
+    python3 main.py --offline            # hardcoded fallback pool, no network
 """
 
+import argparse
 import sys
 import time
 
 # ── Project modules ───────────────────────────────────────────────────────────
-from constraints_config import ConstraintsConfig
+from constraints_config import ConstraintsConfig, FIRST_APRON
 from data_fetcher import (
+    TEAM_NAMES,
+    current_season,
+    dataset_provenance,
+    get_demo_players,
     get_lakers_roster,
     get_nets_roster,
-    _DEMO_PLAYERS,
+    load_dataset,
+    season_label,
+    _row_to_record,
 )
 from sat_layer import SATFeasibilityChecker
-from valuation_model import PlayerValuationModel, LAL_CONTEXT, BKN_CONTEXT
+from valuation_model import PlayerValuationModel, TeamContext, LAL_CONTEXT, BKN_CONTEXT
 from mip_layer import solve_both
 from instance_generator import generate_benchmark_suite
 
@@ -68,7 +82,41 @@ def check_salary_match(
 # Main pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
+def load_rosters(team_a: str, team_b: str, offline: bool, refresh: bool):
+    """Return (roster_a, roster_b, provenance) for the two teams.
+
+    Uses the live dataset unless --offline was passed. Falls back to the
+    hardcoded pool if the live load produced nothing for either team, so the
+    demo still runs on a machine with no network.
+    """
+    if not offline:
+        df = load_dataset(force_refresh=refresh)
+        prov = dataset_provenance(df)
+        ra = [_row_to_record(r) for _, r in df[df["team"] == team_a].iterrows()]
+        rb = [_row_to_record(r) for _, r in df[df["team"] == team_b].iterrows()]
+        if ra and rb:
+            return ra, rb, prov
+        print(f"  ! No live rows for {team_a}/{team_b}; using the offline pool.")
+
+    return get_lakers_roster(), get_nets_roster(), {"is_live": False}
+
+
 def main():
+    ap = argparse.ArgumentParser(description="GM Mode: NBA trade package optimizer")
+    ap.add_argument("--teams", nargs=2, metavar=("A", "B"), default=["LAL", "BRK"],
+                    help="two team abbreviations, e.g. --teams BOS NYK")
+    ap.add_argument("--refresh", action="store_true", help="force a data refetch")
+    ap.add_argument("--offline", action="store_true",
+                    help="use the hardcoded fallback pool instead of live data")
+    args = ap.parse_args()
+
+    team_a, team_b = (t.upper() for t in args.teams)
+    for t in (team_a, team_b):
+        if t not in TEAM_NAMES:
+            sys.exit(f"Unknown team '{t}'. Valid: {', '.join(sorted(TEAM_NAMES))}")
+    if team_a == team_b:
+        sys.exit("Pick two different teams.")
+
     print("\n" + "█" * 65)
     print("  GM MODE: NBA Trade Package Optimizer")
     print("  Constraint Satisfaction + MIP + Gradient Boosted Trees")
@@ -81,7 +129,7 @@ def main():
 
     config = ConstraintsConfig(
         enforce_hard_cap         = True,
-        hard_cap_threshold       = 165_000_000,
+        hard_cap_threshold       = FIRST_APRON,
         enforce_no_trade_clauses = True,
         enforce_recently_signed  = True,
         recently_signed_months   = 12,
@@ -96,20 +144,26 @@ def main():
     # ─────────────────────────────────────────────────────────────────────
     section("1. Load Player Data")
 
-    lakers_roster = get_lakers_roster()
-    nets_roster   = get_nets_roster()
+    roster_a, roster_b, prov = load_rosters(
+        team_a, team_b, offline=args.offline, refresh=args.refresh
+    )
 
-    print(f"\n  Lakers roster: {len(lakers_roster)} players")
-    for p in lakers_roster:
-        tag = " [NTC]" if p.has_ntc else ""
-        rs  = f" [RS:{p.months_since_signing}mo]" if p.months_since_signing < 12 else ""
-        print(f"    {p.name:<24} {p.position}  ${p.salary/1e6:.2f}M{tag}{rs}")
+    if prov.get("is_live"):
+        age = prov.get("age_hours")
+        age_str = f"{age:.1f}h ago" if age is not None else "unknown"
+        print(f"\n  Data: {prov['season_label']} rosters and salaries, "
+              f"{prov['stats_season_label']} stats (fetched {age_str}).")
+    else:
+        print("\n  Data: offline fallback pool (not live).")
 
-    print(f"\n  Nets roster: {len(nets_roster)} players")
-    for p in nets_roster:
-        tag = " [NTC]" if p.has_ntc else ""
-        rs  = f" [RS:{p.months_since_signing}mo]" if p.months_since_signing < 12 else ""
-        print(f"    {p.name:<24} {p.position}  ${p.salary/1e6:.2f}M{tag}{rs}")
+    for abbr, roster in ((team_a, roster_a), (team_b, roster_b)):
+        payroll = sum(p.salary for p in roster)
+        print(f"\n  {TEAM_NAMES.get(abbr, abbr)} roster: {len(roster)} players "
+              f"· payroll ${payroll/1e6:.1f}M")
+        for p in sorted(roster, key=lambda x: -x.salary):
+            tag = " [NTC]" if p.has_ntc else ""
+            rs  = f" [RS:{p.months_since_signing}mo]" if p.months_since_signing < 12 else ""
+            print(f"    {p.name:<24} {p.position}  ${p.salary/1e6:.2f}M{tag}{rs}")
 
     # ─────────────────────────────────────────────────────────────────────
     # SECTION 2: Train the valuation model
@@ -117,7 +171,7 @@ def main():
     section("2. Train GBT Valuation Model")
 
     model = PlayerValuationModel(n_estimators=200, max_depth=4, seed=42)
-    all_players = lakers_roster + nets_roster
+    all_players = roster_a + roster_b
     model.fit(players=all_players)
     print("  GBT model ready.")
 
@@ -126,12 +180,14 @@ def main():
     # ─────────────────────────────────────────────────────────────────────
     section("3. Demo Trade Scenario")
 
-    ad     = _DEMO_PLAYERS["anthony_davis"]    # Lakers → Nets
-    simmo  = _DEMO_PLAYERS["ben_simmons"]      # Nets → Lakers
+    # Headline the biggest contract on each side. On live data this is a real,
+    # current pairing; on the offline pool it reproduces the AD/Simmons demo.
+    ad    = max(roster_a, key=lambda p: p.salary)   # team A → team B
+    simmo = max(roster_b,   key=lambda p: p.salary)   # team B → team A
 
     print("\n  Proposed trade:")
-    print(f"    Brooklyn Nets  send: {simmo.name} (${simmo.salary/1e6:.2f}M)")
-    print(f"    Los Angeles Lakers send: {ad.name} (${ad.salary/1e6:.2f}M)")
+    print(f"    {TEAM_NAMES.get(team_b, team_b)} send: {simmo.name} (${simmo.salary/1e6:.2f}M)")
+    print(f"    {TEAM_NAMES.get(team_a, team_a)} send: {ad.name} (${ad.salary/1e6:.2f}M)")
     print("\n  (A 'first-round pick' has $0 cap value in this model.)")
 
     # For the MIP, the candidate pools define what is *available* to trade.
@@ -146,31 +202,38 @@ def main():
     # ─────────────────────────────────────────────────────────────────────
     section("4. GBT Valuation Scores")
 
-    # Anthony Davis is going to the Nets → value him in BKN context
-    ad_val_bkn   = model.predict(ad,    BKN_CONTEXT)
-    ad.valuation = ad_val_bkn          # store on player (used by MIP)
+    # Reuse the report's contender-vs-rebuild framing, but attached to whichever
+    # two teams were picked rather than to LAL/BKN by name.
+    ctx_a = TeamContext(team_abbr=team_a, rebuild_score=LAL_CONTEXT.rebuild_score,
+                        positional_needs=dict(LAL_CONTEXT.positional_needs))
+    ctx_b = TeamContext(team_abbr=team_b, rebuild_score=BKN_CONTEXT.rebuild_score,
+                        positional_needs=dict(BKN_CONTEXT.positional_needs))
 
-    # Ben Simmons is going to the Lakers → value him in LAL context
-    sim_val_lal  = model.predict(simmo, LAL_CONTEXT)
-    simmo.valuation = sim_val_lal
+    # `ad` is going to team B → value him in B's context
+    ad_val_b     = model.predict(ad, ctx_b)
+    ad.valuation = ad_val_b            # store on player (used by MIP)
+
+    # `simmo` is going to team A → value him in A's context
+    sim_val_a       = model.predict(simmo, ctx_a)
+    simmo.valuation = sim_val_a
 
     # Also compute "staying" valuations for context
-    ad_val_lal   = model.predict(ad,    LAL_CONTEXT)
-    sim_val_bkn  = model.predict(simmo, BKN_CONTEXT)
+    ad_val_a  = model.predict(ad,    ctx_a)
+    sim_val_b = model.predict(simmo, ctx_b)
 
-    print(f"\n  Anthony Davis")
-    print(f"    Value to LAL (current team)  : {ad_val_lal:+.4f}")
-    print(f"    Value to BKN (receiving team): {ad_val_bkn:+.4f}")
+    print(f"\n  {ad.name}")
+    print(f"    Value to {team_a} (current team)  : {ad_val_a:+.4f}")
+    print(f"    Value to {team_b} (receiving team): {ad_val_b:+.4f}")
 
-    print(f"\n  Ben Simmons")
-    print(f"    Value to BKN (current team)  : {sim_val_bkn:+.4f}")
-    print(f"    Value to LAL (receiving team): {sim_val_lal:+.4f}")
+    print(f"\n  {simmo.name}")
+    print(f"    Value to {team_b} (current team)  : {sim_val_b:+.4f}")
+    print(f"    Value to {team_a} (receiving team): {sim_val_a:+.4f}")
 
-    print(f"\n  Net trade value (BKN gains AD, LAL gains Simmons):")
-    net_bkn = ad_val_bkn  - sim_val_bkn   # BKN gains AD, loses Simmons
-    net_lal = sim_val_lal - ad_val_lal    # LAL gains Simmons, loses AD
-    print(f"    BKN net: {net_bkn:+.4f}  {'(gain)' if net_bkn > 0 else '(loss)'}")
-    print(f"    LAL net: {net_lal:+.4f}  {'(gain)' if net_lal > 0 else '(loss)'}")
+    print(f"\n  Net trade value ({team_b} gains {ad.name}, {team_a} gains {simmo.name}):")
+    net_b = ad_val_b  - sim_val_b   # B gains `ad`, loses `simmo`
+    net_a = sim_val_a - ad_val_a    # A gains `simmo`, loses `ad`
+    print(f"    {team_b} net: {net_b:+.4f}  {'(gain)' if net_b > 0 else '(loss)'}")
+    print(f"    {team_a} net: {net_a:+.4f}  {'(gain)' if net_a > 0 else '(loss)'}")
 
     # ─────────────────────────────────────────────────────────────────────
     # SECTION 5: SAT feasibility check
@@ -179,8 +242,8 @@ def main():
 
     checker    = SATFeasibilityChecker(config)
     sat_result = checker.check(
-        roster_a           = lakers_roster,
-        roster_b           = nets_roster,
+        roster_a           = roster_a,
+        roster_b           = roster_b,
         candidates_from_a  = candidates_from_lakers,   # LAL offers
         candidates_from_b  = candidates_from_nets,     # BKN offers
     )
@@ -208,22 +271,22 @@ def main():
 
     # Manual salary matching check (not in SAT, handled by MIP)
     print("\n  Salary matching check (MIP constraint, shown here for info):")
-    sal_out_lal = ad.salary      # LAL sends AD
-    sal_in_lal  = simmo.salary   # LAL receives Simmons
-    sal_out_bkn = simmo.salary
-    sal_in_bkn  = ad.salary
+    sal_out_a = ad.salary       # A sends `ad`
+    sal_in_a  = simmo.salary    # A receives `simmo`
+    sal_out_b = simmo.salary
+    sal_in_b  = ad.salary
 
-    sm_lal = check_salary_match(sal_out_lal, sal_in_lal, config, "LAL")
-    sm_bkn = check_salary_match(sal_out_bkn, sal_in_bkn, config, "BKN")
+    sm_a = check_salary_match(sal_out_a, sal_in_a, config, team_a)
+    sm_b = check_salary_match(sal_out_b, sal_in_b, config, team_b)
 
     # Hard-cap check
-    lal_total_after = sum(p.salary for p in lakers_roster) - sal_out_lal + sal_in_lal
-    bkn_total_after = sum(p.salary for p in nets_roster)   - sal_out_bkn + sal_in_bkn
-    print(f"\n  Hard cap check (${config.hard_cap_threshold/1e6:.0f}M limit):")
-    lal_ok = lal_total_after <= config.hard_cap_threshold
-    bkn_ok = bkn_total_after <= config.hard_cap_threshold
-    print(f"    {'✓' if lal_ok else '✗'} LAL post-trade payroll: ${lal_total_after/1e6:.2f}M")
-    print(f"    {'✓' if bkn_ok else '✗'} BKN post-trade payroll: ${bkn_total_after/1e6:.2f}M")
+    a_total_after = sum(p.salary for p in roster_a) - sal_out_a + sal_in_a
+    b_total_after = sum(p.salary for p in roster_b)   - sal_out_b + sal_in_b
+    print(f"\n  Hard cap check (${config.hard_cap_threshold/1e6:.1f}M limit):")
+    a_ok = a_total_after <= config.hard_cap_threshold
+    b_ok = b_total_after <= config.hard_cap_threshold
+    print(f"    {'✓' if a_ok else '✗'} {team_a} post-trade payroll: ${a_total_after/1e6:.2f}M")
+    print(f"    {'✓' if b_ok else '✗'} {team_b} post-trade payroll: ${b_total_after/1e6:.2f}M")
 
     # ─────────────────────────────────────────────────────────────────────
     # SECTION 6: MIP optimisation
@@ -235,12 +298,12 @@ def main():
     ortools_result, pulp_result = solve_both(
         candidates_from_a  = candidates_from_lakers,
         candidates_from_b  = candidates_from_nets,
-        roster_a           = lakers_roster,
-        roster_b           = nets_roster,
+        roster_a           = roster_a,
+        roster_b           = roster_b,
         sat_result         = sat_result,
         config             = config,
-        team_a             = "LAL",
-        team_b             = "BKN",
+        team_a             = team_a,
+        team_b             = team_b,
     )
 
     print("\n--- OR-Tools CP-SAT ---")
@@ -274,12 +337,12 @@ def main():
     or2, pu2 = solve_both(
         candidates_from_a  = candidates_from_lakers,
         candidates_from_b  = candidates_from_nets,
-        roster_a           = lakers_roster,
-        roster_b           = nets_roster,
+        roster_a           = roster_a,
+        roster_b           = roster_b,
         sat_result         = sat_result,
         config             = config_no_cap,
-        team_a             = "LAL",
-        team_b             = "BKN",
+        team_a             = team_a,
+        team_b             = team_b,
     )
     print("\n--- OR-Tools CP-SAT (no hard cap) ---")
     print(or2.display())
@@ -311,27 +374,28 @@ def main():
     print("  " + "─" * (len(header) - 2))
 
     for inst in suite:
-        team_a, team_b = inst.teams[0], inst.teams[1]
-        ra = inst.rosters[team_a]
-        rb = inst.rosters[team_b]
-        ca = inst.candidates[team_a]
-        cb = inst.candidates[team_b]
+        # Synthetic instances have their own team labels; keep them out of the
+        # outer team_a/team_b so the real matchup above is not clobbered.
+        bench_a, bench_b = inst.teams[0], inst.teams[1]
+        ra = inst.rosters[bench_a]
+        rb = inst.rosters[bench_b]
+        ca = inst.candidates[bench_a]
+        cb = inst.candidates[bench_b]
 
         # Compute synthetic valuations using neutral context
-        from valuation_model import TeamContext
-        ctx_a = TeamContext(team_abbr=team_a)
-        ctx_b = TeamContext(team_abbr=team_b)
+        bctx_a = TeamContext(team_abbr=bench_a)
+        bctx_b = TeamContext(team_abbr=bench_b)
 
         for p in ca:
-            p.valuation = model.predict(p, ctx_b)   # A's players valued by B
+            p.valuation = model.predict(p, bctx_b)   # A's players valued by B
         for p in cb:
-            p.valuation = model.predict(p, ctx_a)   # B's players valued by A
+            p.valuation = model.predict(p, bctx_a)   # B's players valued by A
 
         # SAT check
         sat_r = checker.check(ra, rb, ca, cb)
 
         # MIP solve
-        or_r, pu_r = solve_both(ca, cb, ra, rb, sat_r, inst.config, team_a, team_b)
+        or_r, pu_r = solve_both(ca, cb, ra, rb, sat_r, inst.config, bench_a, bench_b)
 
         print(
             f"  {inst.seed:>6}  {str(inst.expected_feasible):>9}  "

@@ -337,13 +337,14 @@ BKN_CONTEXT = TeamContext(
 # Quick self-test
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    from data_fetcher import _DEMO_PLAYERS
+    from data_fetcher import get_demo_players
 
     model = PlayerValuationModel()
     model.fit()
 
-    ad    = _DEMO_PLAYERS["anthony_davis"]
-    simmo = _DEMO_PLAYERS["ben_simmons"]
+    demo  = get_demo_players()
+    ad    = demo["anthony_davis"]
+    simmo = demo["ben_simmons"]
 
     # Value Anthony Davis from the Nets' perspective (they'd be receiving him)
     val_ad_bkn   = model.predict(ad,    BKN_CONTEXT)

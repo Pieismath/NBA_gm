@@ -22,6 +22,25 @@ from data_fetcher import PlayerRecord
 from constraints_config import ConstraintsConfig
 
 
+# Synthetic rosters are generated on their own salary scale (roughly $140-195M
+# per team), not the real league's. The hard cap used for benchmarking is
+# therefore an experimental parameter, deliberately pinned here rather than
+# inherited from ConstraintsConfig's default.
+#
+# The app's default moved to the real 2026-27 first apron ($209.015M) so that
+# live rosters are not all in violation. Letting that flow into the generator
+# would have loosened every synthetic instance and silently changed the
+# benchmark numbers published in REPORT.md. This keeps those reproducible.
+BENCHMARK_HARD_CAP = 165_000_000.0
+
+
+def benchmark_config(**overrides) -> ConstraintsConfig:
+    """ConstraintsConfig as the report's benchmarks were run with."""
+    params = dict(hard_cap_threshold=BENCHMARK_HARD_CAP)
+    params.update(overrides)
+    return ConstraintsConfig(**params)
+
+
 @dataclass
 class TradeInstance:
     """
@@ -201,7 +220,7 @@ def generate_instance(
         seed = random.randint(0, 10**9)
 
     rng = random.Random(seed)
-    cfg = config or ConstraintsConfig()
+    cfg = config or benchmark_config()
 
     team_names = [chr(65 + i) for i in range(n_teams)]   # ["A", "B"] or ["A", "B", "C"]
     rosters: dict[str, list[PlayerRecord]] = {}

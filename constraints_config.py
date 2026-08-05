@@ -7,13 +7,37 @@ without being hardcoded anywhere. Flip any of them before running.
 from dataclasses import dataclass, field
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-27 CBA salary thresholds (set by the league, effective July 1 2026).
+#
+# These are four different lines and they are not interchangeable. The one a
+# team is actually "hard capped" at is an apron, not the salary cap: the cap is
+# a soft cap that nearly every team is legally over. Defaulting the hard cap to
+# the $165M salary cap put 27 of 30 real teams in violation before any trade was
+# even proposed, which made the app look broken against live rosters.
+# ─────────────────────────────────────────────────────────────────────────────
+
+SALARY_CAP        = 164_961_000.0    # soft cap
+LUXURY_TAX        = 200_428_000.0    # tax line
+FIRST_APRON       = 209_015_000.0    # the usual hard cap
+SECOND_APRON      = 221_686_000.0    # the punitive hard cap
+
+CAP_LEVELS = {
+    "Salary cap":   SALARY_CAP,
+    "Luxury tax":   LUXURY_TAX,
+    "First apron":  FIRST_APRON,
+    "Second apron": SECOND_APRON,
+}
+
+
 @dataclass
 class ConstraintsConfig:
     """
     Which CBA constraints are active and what their thresholds are.
 
     Hard cap: post-trade total salary must stay under hard_cap_threshold
-    when enforce_hard_cap is on. Default threshold is $165M (2024-25).
+    when enforce_hard_cap is on. Default is the 2026-27 first apron
+    ($209.015M), which is the level teams are genuinely hard capped at.
 
     NTC and recently-signed: when enforce_no_trade_clauses or
     enforce_recently_signed is on, the SAT layer adds unit clauses forcing
@@ -30,7 +54,7 @@ class ConstraintsConfig:
 
     # Hard cap
     enforce_hard_cap: bool = True
-    hard_cap_threshold: float = 165_000_000.0   # $165M
+    hard_cap_threshold: float = FIRST_APRON
 
     # NTC / recently-signed
     enforce_no_trade_clauses: bool = True
