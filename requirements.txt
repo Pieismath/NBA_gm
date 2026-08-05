@@ -9,3 +9,7 @@ numpy>=1.24.0
 pandas>=2.0.0
 pyarrow>=14.0.0
 requests>=2.31.0
+# pandas.read_html needs a parser backend. It was never declared and only
+# worked because something else pulled lxml in; without it every live fetch
+# fails and the app silently falls back to the committed parquet.
+lxml>=5.0.0
