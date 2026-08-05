@@ -249,6 +249,12 @@ def _normalize_team(t: str) -> str:
 # nba_api team abbreviations → Basketball-Reference abbreviations where they diverge.
 _NBA_TO_BBR = {"BKN": "BRK", "PHX": "PHO", "CHA": "CHO"}
 
+# stats.nba.com blocks datacenter IPs, so on a host like Streamlit Cloud every
+# request hangs until it times out. At 15s across 30 teams that is 7.5 minutes
+# of a user watching a spinner for data that is never coming.
+_NBA_API_TIMEOUT_S = 8
+_NBA_API_GIVE_UP_AFTER = 3
+
 # nba_api season string for a BBR season number (bbref "2027" == NBA "2026-27").
 def _nba_season_str(season: int) -> str:
     return season_label(season)
@@ -285,16 +291,28 @@ def _fetch_nba_rosters(season: int) -> pd.DataFrame:
     season_str = _nba_season_str(season)
     rows = []
     failures = 0
+    consecutive = 0
     for t in nba_teams.get_teams():
         nba_abbr = t["abbreviation"]
         bbr_abbr = _NBA_TO_BBR.get(nba_abbr, nba_abbr)
         try:
-            r = CommonTeamRoster(team_id=t["id"], season=season_str, timeout=15).get_data_frames()[0]
+            r = CommonTeamRoster(team_id=t["id"], season=season_str,
+                                 timeout=_NBA_API_TIMEOUT_S).get_data_frames()[0]
+            consecutive = 0
         except Exception as e:
             failures += 1
+            consecutive += 1
             # One line per team is noise when the whole endpoint is blocked.
             if failures == 1:
                 print(f"[data_fetcher] nba_api failed for {nba_abbr}: {e}")
+            # When the host is blocking us outright, every team will time out.
+            # Waiting through all 30 costs minutes and buys nothing, so give up
+            # once it is clear this is not a one-off — jersey numbers are the
+            # only thing at stake.
+            if consecutive >= _NBA_API_GIVE_UP_AFTER:
+                print(f"[data_fetcher] nba_api unreachable after "
+                      f"{consecutive} straight failures; skipping the rest.")
+                break
             continue
         for _, row in r.iterrows():
             rows.append({
