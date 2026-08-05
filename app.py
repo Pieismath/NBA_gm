@@ -893,6 +893,13 @@ with st.sidebar:
     if st.button("↻  Refresh rosters", use_container_width=True):
         st.session_state["refresh_token"] += 1
         _load_all.clear()
+        # The multiselects persist by key, and their stored labels embed salaries
+        # that the refetch may have changed. Stale labels match nothing in the
+        # rebuilt option list, so the selection silently empties and the user is
+        # sent back to "pick at least one player". Dropping the keys lets the
+        # defaults repopulate against the new rosters.
+        for k in ("sel_a", "sel_b"):
+            st.session_state.pop(k, None)
         st.rerun()
 
 
