@@ -19,11 +19,28 @@ concurrency:
   group: keep-awake
   cancel-in-progress: true
 
+# GitHub switches scheduled workflows off after 60 days without repository
+# activity, and the bot's roster commits don't count. That silently stopped
+# this job in July 2026. Re-enabling both workflows through the API on every
+# run keeps them on.
+permissions:
+  actions: write
+
 jobs:
   visit:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Keep the scheduled workflows enabled
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for wf in keep-awake.yml refresh-rosters.yml; do
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$wf/enable"
+            echo "Enabled $wf"
+          done
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
