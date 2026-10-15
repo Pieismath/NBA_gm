@@ -360,7 +360,7 @@ st.markdown(f"""
 
   /* Summary strip: flat pixel panel */
   .gm-strip {{
-    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 20px; margin: 28px 0 14px 0;
     padding: 16px 22px;
     background: transparent;
@@ -369,6 +369,8 @@ st.markdown(f"""
     position: relative;
   }}
   .gm-strip > div {{
+    min-width: 0;
+    overflow-wrap: anywhere;
     padding-right: 20px;
     border-right: 2px dotted {RULE};
   }}
@@ -385,6 +387,12 @@ st.markdown(f"""
   .gm-note {{ font-family: 'VT323', monospace; font-size: 16px; color: {MUTED}; margin-top: 4px; }}
   .gm-note.ok  {{ color: {COURT}; font-weight: 700; }}
   .gm-note.bad {{ color: {RED};   font-weight: 700; }}
+
+  @media (max-width: 640px) {{
+    .gm-strip {{ grid-template-columns: 1fr; gap: 14px; padding: 16px; }}
+    .gm-strip > div {{ border-right: none; border-bottom: 1px dotted {RULE}; padding: 0 0 14px; }}
+    .gm-strip > div:last-child {{ border-bottom: none; padding-bottom: 0; }}
+  }}
 
   /* Roster heading: clean pixel label */
   .gm-rhead {{
